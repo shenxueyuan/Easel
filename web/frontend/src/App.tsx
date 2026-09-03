@@ -14,6 +14,7 @@ import PublishPage from './components/PublishPage';
 import BreakdownPage from './components/BreakdownPage';
 import SubNav from './components/SubNav';
 import OnboardingWizard from './components/OnboardingWizard';
+import WelcomeGuide, { shouldShowWelcome } from './components/WelcomeGuide';
 import { fetchStatus, fetchPersonas, streamChat, fetchLastTurn, stopChat } from './lib/api';
 import type { PersonaItem, UploadedFile } from './lib/api';
 import { deleteSession as deleteRemoteSession } from './lib/api';
@@ -51,6 +52,7 @@ export default function App() {
   const [gatewayStatus, setGatewayStatus] = useState('connecting');
   const [showRecommend, setShowRecommend] = useState(false);
   const [showWizard, setShowWizard] = useState(false);
+  const [showWelcome, setShowWelcome] = useState(() => shouldShowWelcome());
 
   // 挂载时决定进哪个会话。规则：
   //  - 同一标签刷新（sessionStorage 记着本标签的会话）→ 直接续上（同标签不算冲突）。
@@ -630,6 +632,15 @@ export default function App() {
           {renderPage()}
         </div>
       </main>
+
+      {/* 首次使用：新手引导（能力介绍） */}
+      {showWelcome && (
+        <WelcomeGuide
+          onClose={() => setShowWelcome(false)}
+          onStart={() => { setShowWelcome(false); setCurrentPage('chat'); }}
+          onConfigProfile={() => { setShowWelcome(false); setShowWizard(true); }}
+        />
+      )}
 
       {/* 首次使用：推荐配置画像 */}
       {showRecommend && (

@@ -211,6 +211,11 @@ export default function ChatPage({ session, stream, onSend, onStop, onResend }: 
                 thinking={live ? stream!.thinking : ''}
                 activity={live ? stream!.activity : ''}
                 actions={actions}
+                onQuote={(text) => {
+                  const snippet = text.length > 2000 ? text.slice(0, 2000) + '\n...(内容过长，已截断)' : text;
+                  setInput(`请针对以下内容进行优化：\n\n\`\`\`\n${snippet}\n\`\`\`\n\n我的修改意见是：`);
+                  setTimeout(() => textareaRef.current?.focus(), 50);
+                }}
               />
             );
           })}

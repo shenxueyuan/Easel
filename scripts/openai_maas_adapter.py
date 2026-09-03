@@ -63,11 +63,16 @@ class Handler(BaseHTTPRequestHandler):
 
             length = int(self.headers.get("Content-Length", "0"))
             raw_body = self.rfile.read(length)
+            endpoint = os.environ.get("OPENAI_MAAS_ENDPOINT", DEFAULT_ENDPOINT)
+            # endpoint 可能是 base URL（如 https://api.siliconflow.cn/v1），
+            # 需要拼上 /chat/completions
+            if endpoint and not endpoint.endswith("/chat/completions"):
+                endpoint = endpoint.rstrip("/") + "/chat/completions"
             request = Request(
-                os.environ.get("OPENAI_MAAS_ENDPOINT", DEFAULT_ENDPOINT),
+                endpoint,
                 data=raw_body,
                 headers={
-                    "api-key": api_key,
+                    "Authorization": f"Bearer {api_key}",
                     "Content-Type": self.headers.get("Content-Type", "application/json"),
                     "Accept": self.headers.get("Accept", "*/*"),
                 },

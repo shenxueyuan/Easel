@@ -299,6 +299,17 @@ def _proxy_env() -> dict[str, str]:
     env.setdefault('http_proxy', os.environ.get('EASEL_PROXY', ''))
     env.setdefault('https_proxy', os.environ.get('EASEL_PROXY', ''))
     env.setdefault('no_proxy', 'localhost,127.0.0.1,*.xiaohongshu.com,*.devops.xiaohongshu.com,10.*')
+    # 确保 openclaw 能找到兼容的 Node.js（系统默认可能版本过低）
+    node_paths = [
+        '/opt/homebrew/Cellar/node@22/22.23.2/bin',
+        '/opt/homebrew/opt/node@22/bin',
+        '/usr/local/bin',
+    ]
+    cur_path = env.get('PATH', '')
+    for np in node_paths:
+        if np not in cur_path:
+            cur_path = f'{np}:{cur_path}'
+    env['PATH'] = cur_path
     return env
 
 
@@ -991,7 +1002,7 @@ async def api_chat_job_stream(turn_id: str, after: int = 0):
                         return
             else:
                 # Keep proxy connections active; reconnecting remains safe if it still drops.
-                if time.monotonic() - idle_since >= 15:
+                if time.monotonic() - idle_since >= 10:
                     yield {"event": "ping", "data": "{}"}
                     idle_since = time.monotonic()
                 await asyncio.sleep(0.25)
@@ -1202,6 +1213,7 @@ async def api_chat_stream(req: ChatRequest):
         deadline = time.monotonic() + TIMEOUT_CHAT + 30
         emitted = False
         tail_finished = False
+        last_activity = time.monotonic()
         try:
             while True:
                 # A raw-stream reader failure must not be mistaken for model
@@ -1216,6 +1228,13 @@ async def api_chat_stream(req: ChatRequest):
                 try:
                     item = await asyncio.wait_for(q.get(), timeout=min(10, remaining))
                 except asyncio.TimeoutError:
+                    # Gateway 模式下 stdout 是缓冲的，raw stream 不工作，
+                    # 需要定期发 activity 保持 SSE 连接活跃，避免被代理掐断。
+                    if time.monotonic() - last_activity >= 15:
+                        fc = run_info.get("fetch_count", 0)
+                        msg = "🧠 正在思考…" if fc <= 1 else f"🔧 正在多步推理（第 {fc} 步）…"
+                        to_client("activity", msg)
+                        last_activity = time.monotonic()
                     continue
                 if item is SENTINEL:
                     tail_finished = True
@@ -1226,10 +1245,13 @@ async def api_chat_stream(req: ChatRequest):
                     emitted = True
                     full_text.append(item["text"])
                     to_client("token", item["text"])
+                    last_activity = time.monotonic()
                 elif item["t"] == "thinking":
                     to_client("thinking", item["text"])
+                    last_activity = time.monotonic()
                 elif item["t"] == "activity":
                     to_client("activity", item["text"])
+                    last_activity = time.monotonic()
             rc = proc.poll()
             # 等 stdout 读完（stopReason 行在进程收尾时才打印，避免 _tail 先发 SENTINEL 时漏读）
             try:
@@ -1361,9 +1383,12 @@ async def api_chat_stream(req: ChatRequest):
                 item = await asyncio.wait_for(client_q.get(), timeout=10)
             except asyncio.TimeoutError:
                 # 长时间无输出（等模型长回复 / 制作类长任务）→ 发心跳，让用户知道没卡死。
-                if time.monotonic() - idle_since >= 30:
+                # 心跳间隔 15 秒，比浏览器/代理默认 SSE 超时（通常 30-60 秒）更短，
+                # 避免长任务时连接被掐断导致「连接中断」误报。
+                if time.monotonic() - idle_since >= 15:
                     yield {"event": "activity", "data": json.dumps(
                         "⏳ 仍在处理中，未卡住…（复杂或制作类任务会花点时间）", ensure_ascii=False)}
+                    idle_since = time.monotonic()
                 continue
             if item is CLIENT_DONE:
                 break

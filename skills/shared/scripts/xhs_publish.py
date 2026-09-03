@@ -464,7 +464,7 @@ def cmd_login(a) -> int:
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         try:
             page.goto(EXPLORE_URL, wait_until="domcontentloaded")
-            page.wait_for_timeout(800)
+            page.wait_for_timeout(3000)
 
             # 已登录直接返回
             if page.query_selector(SELECTORS["login_ok"]):
@@ -473,7 +473,15 @@ def cmd_login(a) -> int:
                 return 0
 
             # 风险 IP 拦截检测：机房/代理出口常被小红书判为风险，直接拦在登录页之前
-            if "website-login/error" in page.url or "安全限制" in (page.title() or ""):
+            # 页面可能需要几秒才完成重定向到 error 页，多检测几次
+            for _ in range(5):
+                if "website-login/error" in page.url or "安全限制" in (page.title() or ""):
+                    login_state.write_status(sf, "error", "IP 存在风险，需干净网络/代理")
+                    _die("小红书判定当前网络为风险 IP（安全限制 300012「IP存在风险，请切换可靠网络环境」）——"
+                         "二维码在此环境无法弹出。解决：①用干净/家宽 IP 的代理 `--proxy socks5://...`；"
+                         "②在正常网络的机器上 login 拿到登录态，再把持久化目录 "
+                         f"{_profile_dir(a.profile_base)} 整个拷到本机复用。", 4)
+                page.wait_for_timeout(1000)
                 login_state.write_status(sf, "error", "IP 存在风险，需干净网络/代理")
                 _die("小红书判定当前网络为风险 IP（安全限制 300012「IP存在风险，请切换可靠网络环境」）——"
                      "二维码在此环境无法弹出。解决：①用干净/家宽 IP 的代理 `--proxy socks5://...`；"

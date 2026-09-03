@@ -49,7 +49,7 @@ from model_registry import env_aliases, provider_ids, provider_required_env
 UA = "Easel-ai-video/0.1"
 
 DEFAULT_DASHSCOPE_BASE = "https://dashscope.aliyuncs.com/api/v1"
-DEFAULT_DASHSCOPE_MODEL = "wan2.1-t2v-turbo"
+DEFAULT_DASHSCOPE_MODEL = "wan2.7-t2v"
 DEFAULT_ARK_BASE = "https://ark.cn-beijing.volces.com/api/v3"
 DEFAULT_ARK_MODEL = "doubao-seedance-1-0-lite-t2v"
 DEFAULT_KLING_BASE = "https://api.klingai.com"
@@ -418,7 +418,11 @@ def generate_dashscope(args: argparse.Namespace, image: str | None) -> Path:
         endpoint = f"{base}/services/aigc/image2video/video-synthesis"
         input_block = {"img_url": _image_to_data_or_url(image), "prompt": args.prompt or ""}
     else:
-        endpoint = f"{base}/services/aigc/text2video/video-synthesis"
+        # wan2.7+ 使用新版 video-generation 端点；旧模型（wan2.1/2.2）用 text2video
+        if model.startswith("wan2.7") or model.startswith("wan3.0"):
+            endpoint = f"{base}/services/aigc/video-generation/video-synthesis"
+        else:
+            endpoint = f"{base}/services/aigc/text2video/video-synthesis"
         input_block = {"prompt": args.prompt}
     params: dict[str, Any] = {}
     if args.ratio:

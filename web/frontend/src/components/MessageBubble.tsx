@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import type { ChatMessage } from '../lib/store';
 import { renderMarkdown } from '../lib/sanitize';
 import { IconCopy, IconCheck, IconRetry } from './icons';
+import FilePreview from './FilePreview';
 
 export interface BubbleActions {
   onCopy: () => void;
@@ -15,6 +16,7 @@ interface MessageBubbleProps {
   thinking?: string;
   activity?: string;
   actions?: BubbleActions;
+  onQuote?: (text: string) => void;   // 引用文件内容到输入框
 }
 
 function ActionBar({ actions }: { actions: BubbleActions }) {
@@ -36,7 +38,7 @@ function ActionBar({ actions }: { actions: BubbleActions }) {
   );
 }
 
-export default function MessageBubble({ message, isStreaming, thinking, activity, actions }: MessageBubbleProps) {
+export default function MessageBubble({ message, isStreaming, thinking, activity, actions, onQuote }: MessageBubbleProps) {
   const html = useMemo(() => {
     if (message.role === 'user') return '';
     return renderMarkdown(message.content);
@@ -75,8 +77,8 @@ export default function MessageBubble({ message, isStreaming, thinking, activity
         </details>
       )}
       {effThinking && (
-        <details className="thinking-block" open={isStreaming && !message.content}>
-          <summary>💭 思考过程</summary>
+        <details className="thinking-block" open={isStreaming}>
+          <summary>💭 思考过程{isStreaming ? `（实时 · ${effThinking.length} 字）` : ''}</summary>
           <div className="thinking-text">{effThinking}</div>
         </details>
       )}
@@ -106,6 +108,9 @@ export default function MessageBubble({ message, isStreaming, thinking, activity
           {message.content && <div dangerouslySetInnerHTML={{ __html: html }} />}
           {isStreaming && <span className="streaming-cursor" />}
         </div>
+        {!isStreaming && message.content && (
+          <FilePreview messageContent={message.content} onQuote={onQuote} />
+        )}
         {actions && !isStreaming && <ActionBar actions={actions} />}
       </div>
     </div>
