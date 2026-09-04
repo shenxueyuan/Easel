@@ -38,6 +38,48 @@ function Avatar({ url, name }: { url?: string; name: string }) {
   return <div className="account-avatar account-avatar-fallback">{initial}</div>;
 }
 
+// 平台登录方式说明（卡片下方展示）
+const PLATFORM_GUIDE: Record<string, { method: string; tip: string; contentType: string }> = {
+  'xiaohongshu': {
+    method: '手机小红书 App 扫码',
+    tip: '需干净/家宽 IP，机房 IP 可能被拦。登录态持久化到本地，之后发布免登。',
+    contentType: '图文 / 视频',
+  },
+  'douyin': {
+    method: '手机抖音 App 扫码',
+    tip: '发布时可能触发短信风控，页面会弹框让你输入验证码。建议用干净 IP。',
+    contentType: '视频 / 图文',
+  },
+  'weixin-channels': {
+    method: '手机微信扫码',
+    tip: '用个人微信扫码登录视频号助手。与公众号是独立账号，不通用。',
+    contentType: '视频（竖版 9:16）',
+  },
+  'zhihu': {
+    method: '手机知乎 App 或微信扫码',
+    tip: '支持专栏文章和问答回答两种发布模式。',
+    contentType: '专栏文章 / 问答回答',
+  },
+  'bilibili': {
+    method: 'B站 App 扫码',
+    tip: '基于 biliup CLI，登录后 cookie 持久化。横版 16:9 为主。',
+    contentType: '视频 / 图文',
+  },
+  'kuaishou': {
+    method: '手机快手 App 扫码',
+    tip: '快手发布 token 偏短命，可能需要比其他平台更勤地重新扫码。',
+    contentType: '视频（竖版 9:16）',
+  },
+};
+
+// 公众号走 API 模式，不在 LOGIN_RUNNERS 里，单独说明
+const WECHAT_MP_GUIDE = {
+  method: 'API 密钥（AppID + AppSecret）',
+  tip: '在「公众号后台 → 开发 → 基本配置」获取，填入 wechat-publisher.yaml。需把本机 IP 加到公众号 IP 白名单。',
+  contentType: '图文文章',
+  configPath: 'skills/openclaw/skill-wechat-publisher/wechat-publisher.yaml',
+};
+
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<AccountItem[]>([]);
   const [err, setErr] = useState('');
@@ -49,6 +91,7 @@ export default function AccountsPage() {
   const [smsCode, setSmsCode] = useState('');
   const [smsBusy, setSmsBusy] = useState(false);
   const [smsErr, setSmsErr] = useState('');
+  const [showGuide, setShowGuide] = useState(false);   // 一稿多发配置指南折叠
   // whoami 结果缓存到 localStorage：打开页面秒显示昵称/头像，不必每次都起浏览器校验
   const [whoami, setWhoami] = useState<Record<string, AccountWhoami | 'loading'>>(() => getWhoamiCache());
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -196,6 +239,74 @@ export default function AccountsPage() {
         <button className="btn btn-sm" onClick={load}>⟳ 刷新</button>
       </div>
 
+      {/* 一稿多发配置指南 */}
+      <div className="card" style={{ marginTop: 14, padding: 0, overflow: 'hidden' }}>
+        <button
+          onClick={() => setShowGuide((v) => !v)}
+          style={{
+            width: '100%', padding: '12px 16px', border: 'none', background: 'none',
+            textAlign: 'left', cursor: 'pointer', fontSize: 14, fontWeight: 600,
+            color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 8,
+          }}>
+          <span style={{ color: 'var(--accent-start)', fontSize: 16 }}>{showGuide ? '▾' : '▸'}</span>
+          一稿多发配置指南
+          <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-tertiary)', fontWeight: 400 }}>
+            登录各平台后即可一稿多发
+          </span>
+        </button>
+        {showGuide && (
+          <div style={{ padding: '0 16px 16px', fontSize: 13, lineHeight: 1.7, color: 'var(--text-secondary)' }}>
+            <h4 style={{ margin: '8px 0 4px', fontSize: 13, color: 'var(--text)' }}>支持的平台（7 个原生 + 1 个 API）</h4>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginTop: 8 }}>
+              <thead>
+                <tr style={{ textAlign: 'left', color: 'var(--text-tertiary)' }}>
+                  <th style={{ padding: '4px 8px', borderBottom: '1px solid var(--border)' }}>平台</th>
+                  <th style={{ padding: '4px 8px', borderBottom: '1px solid var(--border)' }}>登录方式</th>
+                  <th style={{ padding: '4px 8px', borderBottom: '1px solid var(--border)' }}>内容类型</th>
+                  <th style={{ padding: '4px 8px', borderBottom: '1px solid var(--border)' }}>登录入口</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(PLATFORM_GUIDE).map(([pf, g]) => (
+                  <tr key={pf}>
+                    <td style={{ padding: '4px 8px', borderBottom: '1px solid var(--border)' }}>
+                      {pf === 'xiaohongshu' ? '小红书' : pf === 'douyin' ? '抖音' : pf === 'weixin-channels' ? '微信视频号' : pf === 'zhihu' ? '知乎' : pf === 'bilibili' ? 'B站' : pf === 'kuaishou' ? '快手' : pf}
+                    </td>
+                    <td style={{ padding: '4px 8px', borderBottom: '1px solid var(--border)' }}>{g.method}</td>
+                    <td style={{ padding: '4px 8px', borderBottom: '1px solid var(--border)' }}>{g.contentType}</td>
+                    <td style={{ padding: '4px 8px', borderBottom: '1px solid var(--border)' }}>本页扫码登录</td>
+                  </tr>
+                ))}
+                <tr>
+                  <td style={{ padding: '4px 8px', borderBottom: '1px solid var(--border)' }}>微信公众号</td>
+                  <td style={{ padding: '4px 8px', borderBottom: '1px solid var(--border)' }}>{WECHAT_MP_GUIDE.method}</td>
+                  <td style={{ padding: '4px 8px', borderBottom: '1px solid var(--border)' }}>{WECHAT_MP_GUIDE.contentType}</td>
+                  <td style={{ padding: '4px 8px', borderBottom: '1px solid var(--border)', fontSize: 11, color: 'var(--text-tertiary)' }}>
+                    配置文件<br /><code>{WECHAT_MP_GUIDE.configPath}</code>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+
+            <h4 style={{ margin: '16px 0 4px', fontSize: 13, color: 'var(--text)' }}>操作步骤</h4>
+            <ol style={{ margin: 0, paddingLeft: 20 }}>
+              <li><b>逐平台登录</b>：在下方账号卡片点「登录」，用手机 App 扫码。公众号需编辑 YAML 配置文件。</li>
+              <li><b>确认登录态</b>：卡片显示「✓ 已登录」即可。快手 token 易过期，可能需重扫。</li>
+              <li><b>一稿多发</b>：在「对话」页说「把这份内容发到小红书、抖音、B站」，系统自动适配各平台格式并逐平台发布。</li>
+              <li><b>发布前确认</b>：每次发布前系统会展示标题、简介、媒体，确认后才执行。</li>
+            </ol>
+
+            <h4 style={{ margin: '16px 0 4px', fontSize: 13, color: 'var(--text)' }}>注意事项</h4>
+            <ul style={{ margin: 0, paddingLeft: 20 }}>
+              <li>视频号与公众号是<b>独立账号</b>，不通用。视频号用微信扫码，公众号用 API 密钥。</li>
+              <li>各平台内容格式不同（竖版/横版、字数限制、话题标签数量），系统会自动适配。</li>
+              <li>自动化发布有风控风险，建议优先用测试号、小流量验证。</li>
+              <li>登录态存储在 <code>~/.easel-browser-profiles/</code>，属敏感信息，不外泄。</li>
+            </ul>
+          </div>
+        )}
+      </div>
+
       {err && <div style={{ color: 'var(--red)', fontSize: 13, marginTop: 12 }}>{err}</div>}
       {terminalMsg && (
         <div className="card" style={{ padding: 13, fontSize: 13, marginTop: 14 }}>{terminalMsg}</div>
@@ -221,6 +332,19 @@ export default function AccountsPage() {
               )}
               {!logged && (
                 <div className="account-card-note">{a.note ? a.note : `后端：${a.backend}`}</div>
+              )}
+
+              {/* 登录方式说明 */}
+              {PLATFORM_GUIDE[a.platform] && (
+                <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 6, lineHeight: 1.5 }}>
+                  <div>登录方式：{PLATFORM_GUIDE[a.platform].method}</div>
+                  <div>内容类型：{PLATFORM_GUIDE[a.platform].contentType}</div>
+                  {!logged && (
+                    <div style={{ marginTop: 2, color: 'var(--text-tertiary)' }}>
+                      {PLATFORM_GUIDE[a.platform].tip}
+                    </div>
+                  )}
+                </div>
               )}
 
               <div style={{ display: 'flex', gap: 8, marginTop: 'auto' }}>
@@ -249,6 +373,71 @@ export default function AccountsPage() {
             </div>
           );
         })}
+      </div>
+
+      {/* 微信公众号：走 API 模式，不在 LOGIN_RUNNERS 里，单独显示配置卡片 */}
+      <h2 style={{ fontSize: 15, fontWeight: 600, margin: '24px 0 10px', color: 'var(--text)' }}>
+        API 模式平台
+      </h2>
+      <div className="accounts-grid">
+        <div className="card account-card">
+          <div className="account-card-head">
+            <span className="account-card-name">微信公众号</span>
+            <span className="badge">API 配置</span>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 6, lineHeight: 1.5 }}>
+            <div>登录方式：{WECHAT_MP_GUIDE.method}</div>
+            <div>内容类型：{WECHAT_MP_GUIDE.contentType}</div>
+            <div style={{ marginTop: 4 }}>{WECHAT_MP_GUIDE.tip}</div>
+            <div style={{ marginTop: 6, padding: '8px 10px', background: 'var(--surface)', borderRadius: 6, fontSize: 11 }}>
+              <div style={{ color: 'var(--text-secondary)', marginBottom: 2 }}>配置文件：</div>
+              <code style={{ fontSize: 10, wordBreak: 'break-all' }}>{WECHAT_MP_GUIDE.configPath}</code>
+              <div style={{ color: 'var(--text-secondary)', marginTop: 6, marginBottom: 2 }}>必填字段：</div>
+              <code style={{ fontSize: 10 }}>app_id / app_secret / author / theme</code>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 'auto' }}>
+            <button
+              className="btn btn-block"
+              onClick={() => window.alert(
+                '微信公众号配置方法：\n\n' +
+                '1. 登录 mp.weixin.qq.com → 设置 → 开发 → 基本配置\n' +
+                '2. 获取 AppID 和 AppSecret\n' +
+                '3. 把本机 IP 加入 IP 白名单\n' +
+                `4. 编辑配置文件：\n   ${WECHAT_MP_GUIDE.configPath}\n` +
+                '5. 填入 app_id / app_secret / author / theme\n' +
+                '6. 验证：\n   python skills/openclaw/skill-wechat-publisher/scripts/wechat_api.py list-accounts'
+              )}>
+              配置说明
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Wechatsync 多平台同步（草稿模式） */}
+      <h2 style={{ fontSize: 15, fontWeight: 600, margin: '24px 0 10px', color: 'var(--text)' }}>
+        Wechatsync 同步平台（草稿模式，需额外配置）
+      </h2>
+      <div className="card" style={{ padding: 14, fontSize: 12, lineHeight: 1.6, color: 'var(--text-secondary)' }}>
+        <p style={{ margin: '0 0 8px' }}>
+          通过 Wechatsync Chrome 扩展同步图文到以下平台（均存为<b>草稿</b>，需手动确认发布）。
+          <b>当前未启用</b>，需装扩展 + CLI + Token。
+        </p>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+          {['头条', '掘金', 'CSDN', '简书', 'SegmentFault', '开源中国', '博客园', '51CTO', 'InfoQ', '微博', '豆瓣', '百家号', '搜狐号'].map((p) => (
+            <span key={p} className="badge" style={{ fontSize: 11 }}>{p}</span>
+          ))}
+        </div>
+        <details style={{ marginTop: 10 }}>
+          <summary style={{ cursor: 'pointer', color: 'var(--accent-start)', fontSize: 12 }}>启用步骤</summary>
+          <ol style={{ margin: '8px 0 0', paddingLeft: 20, fontSize: 11 }}>
+            <li>Chrome 安装 Wechatsync 扩展，登录各目标平台</li>
+            <li>扩展设置里开「MCP 连接」，生成 Token</li>
+            <li><code>npm install -g @wechatsync/cli</code></li>
+            <li>在 <code>wechat-publisher.yaml</code> 填入 <code>wechatsync_mcp_token</code></li>
+            <li>自检：<code>python skills/openclaw/skill-wechat-publisher/scripts/multi_publish.py --check</code></li>
+          </ol>
+        </details>
       </div>
 
       {qr && (
