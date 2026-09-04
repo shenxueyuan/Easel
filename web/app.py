@@ -1990,6 +1990,19 @@ async def api_wechatsync_check():
     # 检测 OpenClaw 技能是否已安装
     skill_dir = Path.home() / '.openclaw' / 'workspace' / 'skills' / 'wechatsync'
     skill_installed = skill_dir.is_dir()
+    # 检测 Chrome 扩展是否可连接（CLI 连不上扩展说明扩展没装/没开）
+    extension_connected = False
+    if cli_path and token:
+        try:
+            r = subprocess.run(
+                [cli_path, 'platforms', '--auth'],
+                capture_output=True, text=True, timeout=15,
+                env={**os.environ, 'WECHATSYNC_TOKEN': token},
+            )
+            # 如果输出里没有"需要安装 Chrome 扩展"说明连上了
+            extension_connected = '需要安装 Chrome 扩展' not in (r.stdout or '') + (r.stderr or '')
+        except Exception:
+            pass
     return {
         'cli_installed': bool(cli_path),
         'cli_path': cli_path or '',
@@ -1997,7 +2010,8 @@ async def api_wechatsync_check():
         'token_configured': bool(token),
         'token_masked': _mask_secret(token),
         'skill_installed': skill_installed,
-        'ready': bool(cli_path and token),
+        'extension_connected': extension_connected,
+        'ready': bool(cli_path and token and extension_connected),
     }
 
 
@@ -2127,6 +2141,52 @@ async def api_wechatsync_token(req: WechatsyncTokenRequest):
         data['integrations'].pop('wechatsync_mcp_token', None)
     _save_wechat_yaml(data)
     return {'ok': True, 'configured': bool(token)}
+
+
+class WechatsyncSyncRequest(BaseModel):
+    markdown: str
+    platforms: list[str]
+    title: str = ''
+
+
+@app.post("/api/wechatsync/sync")
+async def api_wechatsync_sync(req: WechatsyncSyncRequest):
+    """通过 wechatsync CLI 同步 Markdown 到多平台（草稿模式）。"""
+    import tempfile
+    data = _load_wechat_yaml()
+    token = (data.get('integrations') or {}).get('wechatsync_mcp_token', '') or ''
+    if not token:
+        raise HTTPException(400, '未配置 Wechatsync Token，请先在账号页配置')
+    cli_path = shutil.which('wechatsync')
+    if not cli_path:
+        raise HTTPException(400, '未安装 wechatsync CLI，请先在账号页安装')
+    if not req.platforms:
+        raise HTTPException(400, '请至少选择一个平台')
+    # 写临时 md 文件
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
+        f.write(req.markdown)
+        md_path = f.name
+    try:
+        cmd = [cli_path, 'sync', md_path, '-p', ','.join(req.platforms)]
+        if req.title:
+            cmd.extend(['-t', req.title])
+        env = {**os.environ, 'WECHATSYNC_TOKEN': token}
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env)
+        return {
+            'ok': r.returncode == 0,
+            'stdout': (r.stdout or '')[-1000:],
+            'stderr': (r.stderr or '')[-500:],
+            'returncode': r.returncode,
+        }
+    except subprocess.TimeoutExpired:
+        return {'ok': False, 'stdout': '', 'stderr': '同步超时（300s）', 'returncode': -1}
+    except Exception as e:
+        return {'ok': False, 'stdout': '', 'stderr': str(e), 'returncode': -1}
+    finally:
+        try:
+            os.unlink(md_path)
+        except OSError:
+            pass
 
 
 # 归因层：可抓创作数据的平台（走 Playwright 登录态；bilibili 用 biliup cookies 不在此列）

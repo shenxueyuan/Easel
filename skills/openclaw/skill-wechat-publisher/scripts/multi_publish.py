@@ -91,15 +91,16 @@ def check_prerequisites(verbose=True):
         else:
             print(f"  ✓ wechatsync CLI: {cli_path} (版本查询失败,可能不支持 --version)")
 
-    # 2. MCP Token
-    token = os.environ.get("WECHATSYNC_MCP_TOKEN", "").strip()
+    # 2. MCP Token（CLI 1.0.0 用 WECHATSYNC_TOKEN，旧版用 WECHATSYNC_MCP_TOKEN）
+    token = os.environ.get("WECHATSYNC_TOKEN", "").strip() or \
+        os.environ.get("WECHATSYNC_MCP_TOKEN", "").strip()
     if not token:
         problems.append(
-            "未配置 WECHATSYNC_MCP_TOKEN。请在 Chrome 扩展的 MCP 设置里生成 Token,"
-            "并写入 wechat-publisher.yaml 的 integrations.wechatsync_mcp_token"
+            "未配置 WECHATSYNC_TOKEN。请在 Chrome 扩展的 MCP 设置里生成 Token,"
+            "并通过 Web 页面保存（会写入 wechat-publisher.yaml）"
         )
     elif verbose:
-        print(f"  ✓ WECHATSYNC_MCP_TOKEN: {token[:6]}...")
+        print(f"  ✓ WECHATSYNC_TOKEN: {token[:6]}...")
 
     return len(problems) == 0, problems
 

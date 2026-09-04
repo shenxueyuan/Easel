@@ -94,7 +94,10 @@ def _load_unified_env() -> None:
 
     integrations = cfg.get("integrations") or {}
     if isinstance(integrations, dict):
-        _set_env_if_present("WECHATSYNC_MCP_TOKEN", integrations.get("wechatsync_mcp_token"))
+        token = integrations.get("wechatsync_mcp_token")
+        _set_env_if_present("WECHATSYNC_MCP_TOKEN", token)
+        # wechatsync CLI 1.0.0 实际读取 WECHATSYNC_TOKEN
+        _set_env_if_present("WECHATSYNC_TOKEN", token)
 
     image = cfg.get("image_generation") or {}
     if not isinstance(image, dict):

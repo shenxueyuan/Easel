@@ -26,6 +26,7 @@ import {
   updateSessionTitle,
   loadActiveId,
   saveActiveId,
+  savePublishDraft,
 } from './lib/store';
 import type { ChatSession, ChatMessage, StreamState } from './lib/store';
 
@@ -564,6 +565,10 @@ export default function App() {
             onResend={(userIndex, displayText, attachments, legacyAgentText, thinking) => handleResend(
               activeSession.id, userIndex, displayText, attachments, legacyAgentText, thinking,
             )}
+            onNavigate={setCurrentPage}
+            onPublishContent={(title, body) => {
+              savePublishDraft({ title, body, platforms: [], overrides: {}, tags: '' });
+            }}
           />
         ) : null;
       case 'trends':

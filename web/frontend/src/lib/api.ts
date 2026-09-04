@@ -407,6 +407,7 @@ export interface WechatsyncStatus {
   token_configured: boolean;
   token_masked: string;
   skill_installed: boolean;
+  extension_connected: boolean;
   ready: boolean;
 }
 
@@ -455,6 +456,16 @@ export function saveWechatsyncToken(token: string): Promise<{ ok: boolean; confi
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token }),
+  });
+}
+
+export function wechatsyncSync(data: {
+  markdown: string; platforms: string[]; title?: string;
+}): Promise<{ ok: boolean; stdout: string; stderr: string; returncode: number }> {
+  return request('/api/wechatsync/sync', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
   });
 }
 

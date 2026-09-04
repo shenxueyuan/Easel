@@ -874,7 +874,9 @@ function WechatsyncSection() {
               color: status.ready ? 'var(--green)' : 'var(--text-secondary)' }}>
               {status.ready
                 ? '✓ Wechatsync 环境就绪！可在对话页说「同步到头条、掘金」来使用。'
-                : '⚠ 尚未就绪 — 按顺序完成上述 3 步后即可使用。'}
+                : status.token_configured && status.cli_installed && !status.extension_connected
+                  ? '⚠ Token 和 CLI 已配置，但 Chrome 扩展未连接。请在 Chrome 里加载扩展并开启 MCP 连接。'
+                  : '⚠ 尚未就绪 — 按顺序完成上述步骤后即可使用。'}
             </div>
           </div>
         )}

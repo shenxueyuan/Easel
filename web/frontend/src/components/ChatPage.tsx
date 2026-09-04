@@ -3,7 +3,8 @@ import MessageBubble from './MessageBubble';
 import type { ChatSession, ChatMessage, StreamState } from '../lib/store';
 import { uploadFiles } from '../lib/api';
 import type { ThinkingMode, UploadedFile } from '../lib/api';
-import { IconArrowUp, IconStop, IconPlus, IconFile } from './icons';
+import { IconArrowUp, IconStop, IconPlus, IconFile, IconPublish } from './icons';
+import type { Page } from './Sidebar';
 
 interface ChatPageProps {
   session: ChatSession;
@@ -17,6 +18,8 @@ interface ChatPageProps {
     legacyAgentText?: string,
     thinking?: ThinkingMode,
   ) => void; // 重试：仅对最后一轮
+  onNavigate?: (page: Page) => void;
+  onPublishContent?: (title: string, body: string) => void;
 }
 
 // 空态推荐（贴合 ElephBrain AI 社媒创作场景）
@@ -33,7 +36,7 @@ function greeting(): string {
   return `${g}，想创作点什么？`;
 }
 
-export default function ChatPage({ session, stream, onSend, onStop, onResend }: ChatPageProps) {
+export default function ChatPage({ session, stream, onSend, onStop, onResend, onNavigate, onPublishContent }: ChatPageProps) {
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<UploadedFile[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -143,6 +146,29 @@ export default function ChatPage({ session, stream, onSend, onStop, onResend }: 
             <span className="thinking-toggle-dot" />
             {thinking === 'high' ? '深度思考' : '非深度思考'}
           </button>
+          {onNavigate && !isEmpty && (() => {
+            // 找最后一条 AI 消息
+            const lastAI = [...session.messages].reverse().find((m) => m.role === 'assistant' && m.content.trim());
+            if (!lastAI) return null;
+            return (
+              <button
+                className="composer-attach-btn"
+                onClick={() => {
+                  if (onPublishContent) {
+                    // 提取标题（第一个 # 标题）和正文
+                    const content = lastAI.content;
+                    const titleMatch = content.match(/^#\s+(.+)$/m);
+                    const title = titleMatch ? titleMatch[1] : '';
+                    onPublishContent(title, content);
+                  }
+                  onNavigate('publish');
+                }}
+                title="把 AI 生成的内容带到发布页，选择平台后一键发布"
+              >
+                <IconPublish size={15} /> 去发布
+              </button>
+            );
+          })()}
         </div>
         <span className="composer-hint">{isStreaming ? '生成中…' : 'Enter 发送 · Shift+Enter 换行'}</span>
         {isStreaming ? (

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import {
   createSchedule, executeSkill, runAgent, streamChat,
   fetchAccounts, publishNow, publishStatus, submitPublishSms, fetchOutputs, mediaUrl,
+  checkWechatsync, wechatsyncSync,
 } from '../lib/api';
 import type { AccountItem, OutputFile } from '../lib/api';
 import { loadPublishDraft, savePublishDraft } from '../lib/store';
@@ -30,6 +31,23 @@ const MEDIA_REQUIRED = new Set(['xiaohongshu', 'douyin', 'kuaishou', 'weixin-cha
 // 只能发视频的平台（抖音/视频号/B站：图文不走此链路，必须视频）
 const VIDEO_ONLY = new Set(['douyin', 'weixin-channels', 'bilibili']);
 const VIDEO_RE = /\.(mp4|mov|webm|mkv|avi|m4v|flv|ts)$/i;
+
+// Wechatsync 平台（通过 Chrome 扩展同步为草稿）
+const WECHATSYNC_PLATFORMS: { key: string; label: string }[] = [
+  { key: 'toutiao', label: '头条' },
+  { key: 'juejin', label: '掘金' },
+  { key: 'csdn', label: 'CSDN' },
+  { key: 'jianshu', label: '简书' },
+  { key: 'weibo', label: '微博' },
+  { key: 'segmentfault', label: 'SF' },
+  { key: 'oschina', label: '开源中国' },
+  { key: 'cnblogs', label: '博客园' },
+  { key: '51cto', label: '51CTO' },
+  { key: 'infoq', label: 'InfoQ' },
+  { key: 'baijiahao', label: '百家号' },
+  { key: 'sohu', label: '搜狐号' },
+  { key: 'douban', label: '豆瓣' },
+];
 
 function parseSections(text: string): Record<string, string> {
   const parts = text.split(/^\s*={2,}\s*(.+?)\s*={2,}\s*$/m);
@@ -61,6 +79,9 @@ export default function PublishPage({ persona }: PublishPageProps) {
   const [selectedMedia, setSelectedMedia] = useState<string[]>([]);
   const [showPicker, setShowPicker] = useState(false);
   const [pub, setPub] = useState<Record<string, PubState>>({});
+  const [wsSyncPlatforms, setWsSyncPlatforms] = useState<string[]>([]);
+  const [wsReady, setWsReady] = useState(false);
+  const [wsSyncing, setWsSyncing] = useState(false);
   const [publishing, setPublishing] = useState(false);
   // 发布时的短信验证窗口（抖音风控条件触发；没触发就不弹）
   const [pubSms, setPubSms] = useState<{ platform: string; name: string; state: string; message: string } | null>(null);
@@ -74,9 +95,10 @@ export default function PublishPage({ persona }: PublishPageProps) {
 
   useEffect(() => () => adaptCtl.current?.abort(), []);   // 离开页面中止流
 
-  // 登录态 + 可选媒体列表
+  // 登录态 + 可选媒体列表 + Wechatsync 状态
   useEffect(() => {
     fetchAccounts().then(setAccounts).catch(() => { /* 忽略 */ });
+    checkWechatsync().then((s) => setWsReady(s.ready)).catch(() => { /* 忽略 */ });
     fetchOutputs().then((roots) => {
       const files: OutputFile[] = [];
       const walk = (n: OutputFile) => {
@@ -176,7 +198,8 @@ export default function PublishPage({ persona }: PublishPageProps) {
   const publishAll = async () => {
     if (empty || publishing || checking) return;
     const targets = PLATFORMS.filter((p) => platforms.includes(p.key) && PUBLISHABLE.has(p.key));
-    if (targets.length === 0) {
+    const wsTargets = WECHATSYNC_PLATFORMS.filter((p) => wsSyncPlatforms.includes(p.key));
+    if (targets.length === 0 && wsTargets.length === 0) {
       showToast('所选平台暂不支持一键发布（B站请用「复制」或终端 biliup）');
       return;
     }
@@ -188,13 +211,15 @@ export default function PublishPage({ persona }: PublishPageProps) {
     } finally {
       setChecking(false);
     }
+    const allLabels = [...targets.map((t) => t.label), ...wsTargets.map((t) => `${t.label}(草稿)`)];
     const okToSend = window.confirm(
       `发布前预检已执行，结果已显示在页面中。人设评分只做提醒，不会阻止发布。\n\n` +
-      `即将【真实发布】到：${targets.map((t) => t.label).join('、')}。\n` +
-      `这会公开发布到你的账号，确定继续？`);
+      `即将发布到：${allLabels.join('、')}。\n` +
+      `原生平台会直接发布，Wechatsync 平台同步为草稿（需在各平台后台二次确认）。确定继续？`);
     if (!okToSend) return;
 
     setPublishing(true);
+    // 原生平台发布
     for (const t of targets) {
       if (!loginOf(t.key)) {
         setPub((r) => ({ ...r, [t.key]: { status: 'fail', msg: '未登录 · 去账号页登录' } }));
@@ -212,7 +237,6 @@ export default function PublishPage({ persona }: PublishPageProps) {
       try {
         const res = await publishNow(t.key, { title, body: effective(t.key), media: selectedMedia, tags });
         if (res.async) {
-          // 抖音：异步发布，轮询状态；风控触发短信墙时弹输入框（条件触发，没触发就直接跑完）
           await pollAsyncPublish(t.key, t.label);
         } else {
           setPub((r) => ({
@@ -224,6 +248,30 @@ export default function PublishPage({ persona }: PublishPageProps) {
         }
       } catch (e) {
         setPub((r) => ({ ...r, [t.key]: { status: 'fail', msg: e instanceof Error ? e.message : '发布失败' } }));
+      }
+    }
+    // Wechatsync 平台同步（草稿）
+    if (wsTargets.length > 0) {
+      setWsSyncing(true);
+      const wsKey = 'wechatsync';
+      setPub((r) => ({ ...r, [wsKey]: { status: 'publishing', msg: `同步到 ${wsTargets.map((t) => t.label).join('、')}…` } }));
+      try {
+        const mdContent = title ? `# ${title}\n\n${body}` : body;
+        const res = await wechatsyncSync({
+          markdown: mdContent,
+          platforms: wsTargets.map((t) => t.key),
+          title: title || undefined,
+        });
+        setPub((r) => ({
+          ...r,
+          [wsKey]: res.ok
+            ? { status: 'ok', msg: `已同步草稿到 ${wsTargets.map((t) => t.label).join('、')} ✅` }
+            : { status: 'fail', msg: res.stderr || res.stdout || '同步失败' },
+        }));
+      } catch (e) {
+        setPub((r) => ({ ...r, [wsKey]: { status: 'fail', msg: e instanceof Error ? e.message : '同步失败' } }));
+      } finally {
+        setWsSyncing(false);
       }
     }
     setPublishing(false);
@@ -289,7 +337,7 @@ export default function PublishPage({ persona }: PublishPageProps) {
     showToast('已存为草稿并加入今天的日历');
   };
 
-  const canPublish = platforms.some((k) => PUBLISHABLE.has(k));
+  const canPublish = platforms.some((k) => PUBLISHABLE.has(k)) || (wsReady && wsSyncPlatforms.length > 0);
 
   return (
     <div className="publish-page">
@@ -314,6 +362,24 @@ export default function PublishPage({ persona }: PublishPageProps) {
           {PLATFORMS.map((p) => (
             <button key={p.key} className={`chip ${platforms.includes(p.key) ? 'active' : ''}`}
               onClick={() => toggle(p.key)}>{p.label}</button>
+          ))}
+        </div>
+
+        {/* Wechatsync 多平台同步（草稿模式） */}
+        <label className="field-label" style={{ marginTop: 10, fontSize: 12, color: 'var(--text-secondary)' }}>
+          Wechatsync 同步平台（同步为草稿，需在各平台后台二次发布）
+          {!wsReady && <span style={{ color: 'var(--amber)', marginLeft: 6 }}>⚠ 未配置（去账号页配置）</span>}
+        </label>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {WECHATSYNC_PLATFORMS.map((p) => (
+            <button key={p.key}
+              className={`chip ${wsSyncPlatforms.includes(p.key) ? 'active' : ''}`}
+              disabled={!wsReady}
+              style={{ opacity: wsReady ? 1 : 0.5, fontSize: 12 }}
+              onClick={() => setWsSyncPlatforms((prev) =>
+                prev.includes(p.key) ? prev.filter((k) => k !== p.key) : [...prev, p.key])}>
+              {p.label}
+            </button>
           ))}
         </div>
 
@@ -363,8 +429,8 @@ export default function PublishPage({ persona }: PublishPageProps) {
           <button className="btn btn-sm" disabled={empty} onClick={() => addToCalendar(platforms[0] || 'xiaohongshu')}>
             <IconCalendar size={14} /> 存草稿并排期
           </button>
-          <button className="btn btn-sm btn-primary" disabled={empty || publishing || checking || !canPublish}
-            title={canPublish ? '真实发布到已登录平台' : '所选平台无一键发布（B站走终端 biliup）'}
+          <button className="btn btn-sm btn-primary" disabled={empty || publishing || checking || wsSyncing || !canPublish}
+            title={canPublish ? '发布到已选平台（原生平台直接发布，Wechatsync 同步为草稿）' : '请至少选择一个可发布平台'}
             onClick={publishAll}>
             <IconPublish size={14} /> {publishing ? '发布中…' : '一键发布'}
           </button>
