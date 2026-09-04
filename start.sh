@@ -2,16 +2,23 @@
 set -uo pipefail
 
 # ============================================================
-# Easel 一键启动
-# 用法: bash start.sh [stop|restart|status]
+# ElephBrain AI 一键启动
+# 用法: bash start.sh [start|stop|restart|status|logs]
+#
+# 运行模式：
+#   默认          本地嵌入模式（local）—— 无需 Gateway，资源占用少
+#   EASEL_GATEWAY=1  Gateway 模式       —— 启动常驻 Gateway，支持并发/自动化
 #
 # 自动完成：
 #   1. 检查 Node.js 版本（找兼容版本，不改系统默认）
-#   2. 停掉已运行的 Gateway（--local 模式不需要 Gateway）
+#   2. local 模式：停掉 Gateway（不需要）；gateway 模式：启动 Gateway
 #   3. 启动 LLM Adapter（端口 18791）
 #   4. 启动 Web UI（端口 7860）
 #   5. 健康检查，打印访问地址
 # ============================================================
+
+# ---- 运行模式 ----
+USE_GATEWAY="${EASEL_GATEWAY:-0}"
 
 PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 PROFILE="easel"
@@ -61,12 +68,14 @@ if [ -z "$NODE_BIN_DIR" ]; then
     fail "请先运行: brew install node@22"
     exit 1
 fi
-export PATH="$NODE_BIN_DIR:$PATH"
+export PATH="$NODE_BIN_DIR:/opt/homebrew/opt/ffmpeg-full/bin:/opt/homebrew/bin:$PATH"
 OC="openclaw --profile $PROFILE"
 
 # ---- 找 Python ----
 find_python() {
     local candidates=(
+        "$PROJECT_ROOT/.venv/bin/python"
+        "/opt/homebrew/bin/python3"
         "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3"
         "/opt/homebrew/bin/python3"
         "/usr/local/bin/python3"
@@ -117,7 +126,7 @@ start_adapter() {
     warn "LLM adapter 可能未就绪，检查: $ADAPTER_LOG"
 }
 
-# ---- 停掉 Gateway（--local 模式不需要，且会冲突）----
+# ---- 停掉 Gateway（local 模式不需要，且会冲突）----
 stop_gateway() {
     # 停掉 launchd 服务
     launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/ai.openclaw.easel.plist 2>/dev/null
@@ -127,11 +136,26 @@ stop_gateway() {
     if [ -n "$pid" ]; then
         kill "$pid" 2>/dev/null
         sleep 1
-        ok "Gateway 已停止（--local 模式不需要）"
+        ok "Gateway 已停止"
     fi
     # 清理锁文件
     rm -f ~/.openclaw-easel/tmp/openclaw-501/gateway.*.lock 2>/dev/null
     rm -f ~/.openclaw-easel/tmp/openclaw-501/gateway.*.lock.sqlite* 2>/dev/null
+}
+
+# ---- 启动 Gateway（gateway 模式需要）----
+start_gateway() {
+    if gateway_live; then
+        ok "Gateway 已在运行 (端口 $GATEWAY_PORT)"
+        return 0
+    fi
+    info "启动 Gateway..."
+    nohup openclaw --profile "$PROFILE" gateway run --force > "$GATEWAY_LOG" 2>&1 &
+    for _ in $(seq 1 20); do
+        gateway_live && { ok "Gateway 已启动 (端口 $GATEWAY_PORT)"; return 0; }
+        sleep 0.5
+    done
+    warn "Gateway 可能未就绪，检查: $GATEWAY_LOG"
 }
 
 # ---- 启动 Web UI ----
@@ -154,28 +178,28 @@ start_web() {
 
 # ---- 停止 ----
 stop_all() {
-    info "停止 Easel..."
-    # Web UI
-    local pid; pid="$(port_in_use "$WEB_PORT")"
-    [ -n "$pid" ] && kill "$pid" 2>/dev/null && ok "Web UI 已停止" || ok "Web UI 未运行"
-    # Gateway
-    pid="$(port_in_use "$GATEWAY_PORT")"
-    [ -n "$pid" ] && kill "$pid" 2>/dev/null && ok "Gateway 已停止" || ok "Gateway 未运行"
-    # Adapter
-    pid="$(port_in_use "$ADAPTER_PORT")"
-    [ -n "$pid" ] && kill "$pid" 2>/dev/null && ok "LLM adapter 已停止" || ok "LLM adapter 未运行"
+    info "停止 ElephBrain AI..."
+    local pids
+    pids="$(lsof -ti:"$WEB_PORT" 2>/dev/null | tr '\n' ' ')"
+    [ -n "$pids" ] && kill $pids 2>/dev/null && ok "Web UI 已停止" || ok "Web UI 未运行"
+    pids="$(lsof -ti:"$GATEWAY_PORT" 2>/dev/null | tr '\n' ' ')"
+    [ -n "$pids" ] && kill $pids 2>/dev/null && ok "Gateway 已停止" || ok "Gateway 未运行"
+    pids="$(lsof -ti:"$ADAPTER_PORT" 2>/dev/null | tr '\n' ' ')"
+    [ -n "$pids" ] && kill $pids 2>/dev/null && ok "LLM adapter 已停止" || ok "LLM adapter 未运行"
 }
 
 # ---- 状态 ----
 show_status() {
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "  Easel 运行状态"
+    echo "  ElephBrain AI 运行状态"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     if gateway_live; then
         ok "Gateway    : http://localhost:$GATEWAY_PORT  (运行中)"
+    elif [ "$USE_GATEWAY" = "1" ]; then
+        fail "Gateway    : 未运行（已启用 gateway 模式但未启动）"
     else
-        fail "Gateway    : 离线"
+        ok "Gateway    : 未启用（local 模式）"
     fi
     if adapter_live; then
         ok "LLM Adapter: http://localhost:$ADAPTER_PORT  (运行中)"
@@ -199,14 +223,23 @@ case "${1:-start}" in
     start)
         echo ""
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "  Easel 一键启动"
+        echo "  ElephBrain AI 一键启动"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         info "Node: $(node --version) ($NODE_BIN_DIR)"
         info "Python: $($PYTHON_BIN --version) ($PYTHON_BIN)"
+        if [ "$USE_GATEWAY" = "1" ]; then
+            info "模式: Gateway（常驻服务，支持并发/自动化）"
+        else
+            info "模式: Local（本地嵌入，资源占用少）"
+        fi
         echo ""
-        stop_gateway
-        start_adapter
-        start_web
+        if [ "$USE_GATEWAY" = "1" ]; then
+            start_gateway
+        else
+            stop_gateway
+        fi
+        start_adapter || exit 1
+        start_web || exit 1
         show_status
         ;;
     stop)
@@ -215,13 +248,13 @@ case "${1:-start}" in
     restart)
         stop_all
         sleep 2
-        "$0" start
+        bash "$PROJECT_ROOT/start.sh" start
         ;;
     status)
         show_status
         ;;
     logs)
-        local svc="${2:-web}"
+        svc="${2:-web}"
         case "$svc" in
             web)      tail -f "$WEB_LOG" ;;
             gateway)  tail -f "$GATEWAY_LOG" ;;
@@ -232,11 +265,15 @@ case "${1:-start}" in
     *)
         echo "用法: $0 {start|stop|restart|status|logs [web|gateway|adapter]}"
         echo ""
-        echo "  start    一键启动 Gateway + Adapter + Web UI"
+        echo "  start    一键启动（默认 local 模式）"
         echo "  stop     停止所有服务"
         echo "  restart  重启所有服务"
         echo "  status   查看运行状态"
         echo "  logs     查看日志（默认 web，可选 gateway/adapter）"
+        echo ""
+        echo "运行模式："
+        echo "  bash start.sh start              # local 模式（默认，无需 Gateway）"
+        echo "  EASEL_GATEWAY=1 bash start.sh start  # gateway 模式（常驻 Gateway）"
         exit 1
         ;;
 esac
