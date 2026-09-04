@@ -2,23 +2,24 @@ import { useState, useRef, useEffect } from 'react';
 import MessageBubble from './MessageBubble';
 import type { ChatSession, ChatMessage, StreamState } from '../lib/store';
 import { uploadFiles } from '../lib/api';
-import type { UploadedFile } from '../lib/api';
+import type { ThinkingMode, UploadedFile } from '../lib/api';
 import { IconArrowUp, IconStop, IconPlus, IconFile } from './icons';
 
 interface ChatPageProps {
   session: ChatSession;
   stream?: StreamState;          // 进行中的流式态（来自 App，切页也不丢）
-  onSend: (displayText: string, attachments?: UploadedFile[]) => void;
+  onSend: (displayText: string, attachments?: UploadedFile[], thinking?: ThinkingMode) => void;
   onStop: () => void;
   onResend: (
     userIndex: number,
     displayText: string,
     attachments?: UploadedFile[],
     legacyAgentText?: string,
+    thinking?: ThinkingMode,
   ) => void; // 重试：仅对最后一轮
 }
 
-// 空态推荐（贴合 Easel 社媒创作场景）
+// 空态推荐（贴合 ElephBrain AI 社媒创作场景）
 const SUGGESTIONS = [
   { icon: '🔥', title: '蹭个热点', prompt: '看看现在微博和抖音有什么热搜，挑几个适合我做二创的选题' },
   { icon: '✍️', title: '写小红书文案', prompt: '帮我写一条小红书种草文案，主题先问我' },
@@ -37,6 +38,7 @@ export default function ChatPage({ session, stream, onSend, onStop, onResend }: 
   const [attachments, setAttachments] = useState<UploadedFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [thinking, setThinking] = useState<ThinkingMode>(() => localStorage.getItem('easel_thinking_mode') === 'high' ? 'high' : 'off');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -82,7 +84,7 @@ export default function ChatPage({ session, stream, onSend, onStop, onResend }: 
     const trimmed = input.trim();
     if ((!trimmed && attachments.length === 0) || isStreaming || uploading) return;
     // 附件通过结构化字段发送；用户消息气泡只显示用户实际输入的文字。
-    onSend(trimmed, attachments);
+    onSend(trimmed, attachments, thinking);
     setInput('');
     setAttachments([]);
   };
@@ -123,10 +125,25 @@ export default function ChatPage({ session, stream, onSend, onStop, onResend }: 
       <input ref={fileInputRef} type="file" multiple hidden
         onChange={(e) => { if (e.target.files) doUpload(e.target.files); e.target.value = ''; }} />
       <div className="composer-bar">
-        <button className="composer-attach-btn" onClick={() => fileInputRef.current?.click()}
-          disabled={isStreaming || uploading} title="添加素材（图片/文档）">
-          <IconPlus size={15} /> {uploading ? '上传中…' : '素材'}
-        </button>
+        <div className="composer-tools">
+          <button className="composer-attach-btn" onClick={() => fileInputRef.current?.click()}
+            disabled={isStreaming || uploading} title="添加素材（图片/文档）">
+            <IconPlus size={15} /> {uploading ? '上传中…' : '素材'}
+          </button>
+          <button
+            className={`thinking-toggle ${thinking === 'high' ? 'active' : ''}`}
+            onClick={() => {
+              const next = thinking === 'high' ? 'off' : 'high';
+              setThinking(next);
+              localStorage.setItem('easel_thinking_mode', next);
+            }}
+            disabled={isStreaming}
+            title={thinking === 'high' ? '已开启深度思考，点击切换为快速回答' : '当前为非深度思考，点击开启'}
+          >
+            <span className="thinking-toggle-dot" />
+            {thinking === 'high' ? '深度思考' : '非深度思考'}
+          </button>
+        </div>
         <span className="composer-hint">{isStreaming ? '生成中…' : 'Enter 发送 · Shift+Enter 换行'}</span>
         {isStreaming ? (
           <button className="send-btn" onClick={onStop} title="停止生成"><IconStop size={15} /></button>
@@ -143,8 +160,8 @@ export default function ChatPage({ session, stream, onSend, onStop, onResend }: 
       <div className="chat-page">
         <div className="chat-hero">
           <div className="chat-hero-brand">
-            <img src="./static/easel-icon-transparent.png" alt="" />
-            <span>Easel</span>
+            <img src="./static/elephbrain-icon-transparent.png" alt="" />
+            <span>ElephBrain AI</span>
           </div>
           <h1 className="chat-hero-title">{greeting()}</h1>
           <p className="chat-hero-sub">从选题到发布，一站式帮你把想法做成能发的内容。</p>
@@ -152,7 +169,7 @@ export default function ChatPage({ session, stream, onSend, onStop, onResend }: 
           <div className="suggestions">
             {SUGGESTIONS.map((s) => (
               <button key={s.title} className="card card-hover suggestion-card"
-                onClick={() => { if (!isStreaming) onSend(s.prompt); }}>
+                onClick={() => { if (!isStreaming) onSend(s.prompt, undefined, thinking); }}>
                 <span className="suggestion-icon">{s.icon}</span>
                 <span className="suggestion-body">
                   <span className="suggestion-title">{s.title}</span>
@@ -187,7 +204,7 @@ export default function ChatPage({ session, stream, onSend, onStop, onResend }: 
                 actions = {
                   onCopy: copy,
                   onRetry: isLastFinal
-                    ? () => onResend(i, msg.content, msg.attachments, msg.agentContent)
+                    ? () => onResend(i, msg.content, msg.attachments, msg.agentContent, thinking)
                     : undefined,
                   canModify: !isStreaming,
                 };
@@ -197,7 +214,7 @@ export default function ChatPage({ session, stream, onSend, onStop, onResend }: 
                 actions = {
                   onCopy: copy,
                   onRetry: (isLastFinal && prevUser)
-                    ? () => onResend(pi, prevUser.content, prevUser.attachments, prevUser.agentContent)
+                    ? () => onResend(pi, prevUser.content, prevUser.attachments, prevUser.agentContent, thinking)
                     : undefined,
                   canModify: !isStreaming,
                 };

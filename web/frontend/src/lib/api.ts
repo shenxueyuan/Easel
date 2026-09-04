@@ -454,6 +454,8 @@ export function stopChat(sessionId: string): Promise<{ stopped: boolean }> {
   });
 }
 
+export type ThinkingMode = 'off' | 'high';
+
 export function streamChat(
   message: string,
   persona: string | undefined,
@@ -468,6 +470,7 @@ export function streamChat(
   resumeOnly = false,
   onRecoveryUnavailable?: () => void,
   attachments: UploadedFile[] = [],
+  thinking: ThinkingMode = 'off',
 ): AbortController {
   const controller = new AbortController();
   let lastEventId = 0;
@@ -550,7 +553,7 @@ export function streamChat(
         const res = first
           ? await fetch(`${BASE}/api/chat/stream`, {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ message, persona: persona || undefined, sessionId, turnId, attachments }),
+              body: JSON.stringify({ message, persona: persona || undefined, sessionId, turnId, attachments, thinking }),
               signal: controller.signal,
             })
           : await fetch(`${BASE}/api/chat/jobs/${encodeURIComponent(turnId || '')}/stream?after=${lastEventId}`, {

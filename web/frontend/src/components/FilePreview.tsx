@@ -1,29 +1,27 @@
-import { useState, useEffect, useCallback } from 'react';
-import { fetchOutputContent, mediaUrl } from '../lib/api';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import { fetchOutputContent, fetchOutputs, mediaUrl } from '../lib/api';
+import type { OutputNode } from '../lib/api';
 import { renderMarkdown } from '../lib/sanitize';
 
 /**
- * 从消息文本中提取 outputs/ 相对路径。
- * 匹配模式：
- *   - `outputs/xxx/yyy.md`（反引号包裹）
- *   - outputs/xxx/yyy.md（裸路径）
- *   - outputs\\xxx\\yyy.md（Windows 风格，少见）
+ * 从消息文本中提取 outputs/ 下的文件或目录相对路径。
+ * 支持反引号包裹和裸路径；目录会在产物树中展开为可预览文件。
  */
-function extractFilePaths(text: string): string[] {
-  const paths: string[] = [];
-  // 匹配 `outputs/...` 反引号路径
-  const backtickRe = /`outputs\/[^\s`)]+\.\w+/g;
-  // 匹配裸 outputs/...路径
-  const bareRe = /\boutputs\/[^\s`)]+\.\w+/g;
-
-  for (const re of [backtickRe, bareRe]) {
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(text)) !== null) {
-      const p = m[0].replace(/^`/, '').replace(/^outputs\//, '');
-      if (!paths.includes(p)) paths.push(p);
-    }
+function extractOutputPaths(text: string): { files: string[]; directories: string[] } {
+  const files: string[] = [];
+  const directories: string[] = [];
+  const re = /`?outputs\/[^\s`)}\]]+/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    const path = match[0]
+      .replace(/^`?outputs\//, '')
+      .replace(/[，。；;：:,]+$/, '')
+      .replace(/\/$/, '');
+    if (!path) continue;
+    const target = /\.[a-z0-9]{1,8}$/i.test(path) ? files : directories;
+    if (!target.includes(path)) target.push(path);
   }
-  return paths;
+  return { files, directories };
 }
 
 const EXT_KIND: Record<string, 'text' | 'image' | 'video' | 'audio' | 'html' | 'pdf' | 'binary'> = {
@@ -50,13 +48,38 @@ function fileName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
+function findNode(nodes: OutputNode[], path: string): OutputNode | undefined {
+  for (const node of nodes) {
+    if (node.path === path) return node;
+    const found = node.children && findNode(node.children, path);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function previewFiles(node: OutputNode): string[] {
+  const collectFiles = (current: OutputNode): OutputNode[] => current.type === 'file'
+    ? [current]
+    : (current.children || []).flatMap(collectFiles);
+  const direct = (node.children || []).filter((child) => child.type === 'file');
+  const candidates = direct.length ? direct : collectFiles(node);
+  return candidates
+    .filter((child) => ['image', 'video', 'audio', 'html', 'pdf'].includes(kindOf(child.path)))
+    .sort((a, b) => {
+      const featured = (path: string) => /预览|总览|cover|final|成品/i.test(path) ? 0 : kindOf(path) === 'image' ? 1 : 2;
+      return featured(a.path) - featured(b.path) || a.path.localeCompare(b.path, 'zh-CN', { numeric: true });
+    })
+    .slice(0, 12)
+    .map((child) => child.path);
+}
+
 /** 单个文件预览卡片 */
 function PreviewCard({ path, onQuote }: { path: string; onQuote?: (text: string) => void }) {
   const kind = kindOf(path);
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(['image', 'video', 'audio'].includes(kind));
 
   const load = useCallback(async () => {
     if (content !== null || loading) return;
@@ -85,7 +108,7 @@ function PreviewCard({ path, onQuote }: { path: string; onQuote?: (text: string)
 
   const cardStyle: React.CSSProperties = {
     border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden',
-    margin: '8px 0', background: 'var(--bg-elev)',
+    margin: 0, background: 'var(--bg-elev)', minWidth: 0,
   };
   const headStyle: React.CSSProperties = {
     display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
@@ -123,7 +146,7 @@ function PreviewCard({ path, onQuote }: { path: string; onQuote?: (text: string)
             <div dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }} />
           )}
           {kind === 'image' && (
-            <img src={mediaUrl(path)} alt={fileName(path)} style={{ maxWidth: '100%', display: 'block' }} />
+            <img src={mediaUrl(path)} alt={fileName(path)} style={{ width: '100%', maxHeight: 560, objectFit: 'contain', display: 'block', background: 'var(--surface)' }} />
           )}
           {kind === 'video' && (
             <video src={mediaUrl(path)} controls style={{ width: '100%' }} />
@@ -157,7 +180,24 @@ interface FilePreviewProps {
 
 /** 从消息内容中提取文件路径并渲染预览卡片 */
 export default function FilePreview({ messageContent, onQuote }: FilePreviewProps) {
-  const paths = extractFilePaths(messageContent);
+  const references = useMemo(() => extractOutputPaths(messageContent), [messageContent]);
+  const [paths, setPaths] = useState(references.files);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPaths(references.files);
+    if (!references.directories.length) return () => { cancelled = true; };
+    void fetchOutputs().then((tree) => {
+      if (cancelled) return;
+      const discovered = references.directories.flatMap((directory) => {
+        const node = findNode(tree, directory);
+        return node ? previewFiles(node) : [];
+      });
+      setPaths([...new Set([...references.files, ...discovered])]);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [references]);
+
   if (paths.length === 0) return null;
 
   return (

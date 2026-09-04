@@ -12,11 +12,12 @@ import CalendarPage from './components/CalendarPage';
 import IdeasPage from './components/IdeasPage';
 import PublishPage from './components/PublishPage';
 import BreakdownPage from './components/BreakdownPage';
+import UseCasesPage from './components/UseCasesPage';
 import SubNav from './components/SubNav';
 import OnboardingWizard from './components/OnboardingWizard';
 import WelcomeGuide, { shouldShowWelcome } from './components/WelcomeGuide';
 import { fetchStatus, fetchPersonas, streamChat, fetchLastTurn, stopChat } from './lib/api';
-import type { PersonaItem, UploadedFile } from './lib/api';
+import type { PersonaItem, ThinkingMode, UploadedFile } from './lib/api';
 import { deleteSession as deleteRemoteSession } from './lib/api';
 import {
   loadSessions,
@@ -195,6 +196,7 @@ export default function App() {
     text: string,
     persona: string | undefined,
     attachments: UploadedFile[] = [],
+    thinking: ThinkingMode = 'off',
   ) => {
     const turnId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     try { sessionStorage.setItem(`easel_pending_turn:${sessionId}`, turnId); } catch { /* ignore */ }
@@ -249,6 +251,7 @@ export default function App() {
       false,
       undefined,
       attachments,
+      thinking,
     );
   }, [appendAssistant, clearStream]);
 
@@ -335,6 +338,7 @@ export default function App() {
     attachments: UploadedFile[] = [],
     legacyAgentText?: string,
     truncateAt?: number,
+    thinking: ThinkingMode = 'off',
   ) => {
     const visible = displayText.trim();
     const agentMessage = (legacyAgentText || displayText).trim();
@@ -360,11 +364,11 @@ export default function App() {
       saveSessions(next);
       return next;
     });
-    startStream(sessionId, agentMessage, persona, attachments);
+    startStream(sessionId, agentMessage, persona, attachments, thinking);
   }, [selectedPersona, startStream]);
 
-  const handleSendMessage = useCallback((sessionId: string, displayText: string, attachments?: UploadedFile[]) => {
-    sendUserAndStream(sessionId, displayText, attachments);
+  const handleSendMessage = useCallback((sessionId: string, displayText: string, attachments?: UploadedFile[], thinking?: ThinkingMode) => {
+    sendUserAndStream(sessionId, displayText, attachments, undefined, undefined, thinking);
   }, [sendUserAndStream]);
 
   // 重试/编辑重发：从该用户消息处截断（丢弃它及其之后），用 text 重新发起。
@@ -374,8 +378,9 @@ export default function App() {
     displayText: string,
     attachments?: UploadedFile[],
     legacyAgentText?: string,
+    thinking?: ThinkingMode,
   ) => {
-    sendUserAndStream(sessionId, displayText, attachments, legacyAgentText, userIndex);
+    sendUserAndStream(sessionId, displayText, attachments, legacyAgentText, userIndex, thinking);
   }, [sendUserAndStream]);
 
   // 热点「一键做成内容」：新开会话，把选题作为指令发出去，跳到对话页。
@@ -554,10 +559,10 @@ export default function App() {
             key={activeSession.id}
             session={activeSession}
             stream={streams[activeSession.id]}
-            onSend={(displayText, attachments) => handleSendMessage(activeSession.id, displayText, attachments)}
+            onSend={(displayText, attachments, thinking) => handleSendMessage(activeSession.id, displayText, attachments, thinking)}
             onStop={() => handleStopStream(activeSession.id)}
-            onResend={(userIndex, displayText, attachments, legacyAgentText) => handleResend(
-              activeSession.id, userIndex, displayText, attachments, legacyAgentText,
+            onResend={(userIndex, displayText, attachments, legacyAgentText, thinking) => handleResend(
+              activeSession.id, userIndex, displayText, attachments, legacyAgentText, thinking,
             )}
           />
         ) : null;
@@ -571,6 +576,8 @@ export default function App() {
         return <PublishPage persona={selectedPersona} />;
       case 'breakdown':
         return <BreakdownPage persona={selectedPersona} />;
+      case 'usecases':
+        return <UseCasesPage onNavigate={setCurrentPage} />;
       case 'skills':
         return <SkillPage persona={selectedPersona} />;
       case 'outputs':
@@ -647,7 +654,7 @@ export default function App() {
         <div className="overlay">
           <div className="modal" style={{ width: 420, maxWidth: '100%', textAlign: 'center' }}>
             <div style={{ fontSize: 40 }}>👋</div>
-            <h2 style={{ margin: '12px 0 8px', fontSize: 20 }}>欢迎使用 Easel</h2>
+            <h2 style={{ margin: '12px 0 8px', fontSize: 20 }}>欢迎使用 ElephBrain AI</h2>
             <p style={{ color: 'var(--text-secondary)', fontSize: 14, lineHeight: 1.6 }}>
               配置你的账号画像，生成的内容会更贴合你的风格、受众和平台调性。<br />
               大约 2 分钟，也可以随时在侧栏「+ 新建画像」补配。
