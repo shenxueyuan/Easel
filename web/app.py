@@ -1987,12 +1987,16 @@ async def api_wechatsync_check():
             pass
     data = _load_wechat_yaml()
     token = (data.get('integrations') or {}).get('wechatsync_mcp_token', '') or ''
+    # 检测 OpenClaw 技能是否已安装
+    skill_dir = Path.home() / '.openclaw' / 'workspace' / 'skills' / 'wechatsync'
+    skill_installed = skill_dir.is_dir()
     return {
         'cli_installed': bool(cli_path),
         'cli_path': cli_path or '',
         'cli_version': cli_version,
         'token_configured': bool(token),
         'token_masked': _mask_secret(token),
+        'skill_installed': skill_installed,
         'ready': bool(cli_path and token),
     }
 
@@ -2020,6 +2024,26 @@ async def api_wechatsync_cli(req: WechatsyncInstallRequest):
         }
     except subprocess.TimeoutExpired:
         return {'ok': False, 'stdout': '', 'stderr': '安装超时（120s）', 'returncode': -1}
+    except Exception as e:
+        return {'ok': False, 'stdout': '', 'stderr': str(e), 'returncode': -1}
+
+
+@app.post("/api/wechatsync/skill")
+async def api_wechatsync_skill():
+    """一键安装 Wechatsync OpenClaw 技能（clawhub install @lljxx1/wechatsync）。"""
+    cmd = ['openclaw', 'skills', 'install', '@lljxx1/wechatsync',
+           '--acknowledge-install-policy-warning']
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60,
+                           env=_proxy_env(), cwd=str(PROJECT_ROOT))
+        return {
+            'ok': r.returncode == 0,
+            'stdout': (r.stdout or '')[-800:],
+            'stderr': (r.stderr or '')[-500:],
+            'returncode': r.returncode,
+        }
+    except subprocess.TimeoutExpired:
+        return {'ok': False, 'stdout': '', 'stderr': '安装超时（60s）', 'returncode': -1}
     except Exception as e:
         return {'ok': False, 'stdout': '', 'stderr': str(e), 'returncode': -1}
 

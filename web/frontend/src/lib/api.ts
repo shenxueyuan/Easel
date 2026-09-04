@@ -406,6 +406,7 @@ export interface WechatsyncStatus {
   cli_version: string | null;
   token_configured: boolean;
   token_masked: string;
+  skill_installed: boolean;
   ready: boolean;
 }
 
@@ -421,6 +422,12 @@ export function installWechatsyncCli(action: 'install' | 'uninstall' = 'install'
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action }),
   });
+}
+
+export function installWechatsyncSkill(): Promise<{
+  ok: boolean; stdout: string; stderr: string; returncode: number;
+}> {
+  return request('/api/wechatsync/skill', { method: 'POST' });
 }
 
 export function saveWechatsyncToken(token: string): Promise<{ ok: boolean; configured: boolean }> {

@@ -3,7 +3,7 @@ import {
   fetchAccounts, startLogin, loginStatus, mediaUrl,
   accountWhoami, logoutAccount, submitLoginSms,
   fetchWechatMpConfig, saveWechatMpAccount, deleteWechatMpAccount,
-  checkWechatsync, installWechatsyncCli, saveWechatsyncToken,
+  checkWechatsync, installWechatsyncCli, installWechatsyncSkill, saveWechatsyncToken,
 } from '../lib/api';
 import type {
   AccountItem, AccountWhoami,
@@ -623,6 +623,7 @@ function WechatsyncSection() {
   const [status, setStatus] = useState<WechatsyncStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [cliBusy, setCliBusy] = useState(false);
+  const [skillBusy, setSkillBusy] = useState(false);
   const [tokenInput, setTokenInput] = useState('');
   const [tokenSaving, setTokenSaving] = useState(false);
   const [msg, setMsg] = useState('');
@@ -650,6 +651,23 @@ function WechatsyncSection() {
       setMsg(e instanceof Error ? e.message : '安装失败');
     } finally {
       setCliBusy(false);
+    }
+  };
+
+  const handleInstallSkill = async () => {
+    setSkillBusy(true); setMsg('');
+    try {
+      const r = await installWechatsyncSkill();
+      if (r.ok) {
+        setMsg('✓ Wechatsync 技能安装成功');
+        load();
+      } else {
+        setMsg(`✗ 技能安装失败：${r.stderr || r.stdout || '未知错误'}`);
+      }
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : '技能安装失败');
+    } finally {
+      setSkillBusy(false);
     }
   };
 
@@ -783,6 +801,34 @@ function WechatsyncSection() {
                 <div style={{ marginTop: 8, padding: '10px 12px', background: 'var(--surface)', borderRadius: 6, fontSize: 12, lineHeight: 1.7, color: 'var(--text-secondary)' }}>
                   点击「一键安装」即可，后端自动执行 <code>npm install -g @wechatsync/cli</code>。
                   安装后此步骤显示 ✅。
+                </div>
+              )}
+            </div>
+
+            {/* 步骤 4：安装 OpenClaw 技能（让 AI 能直接调用） */}
+            <div style={{ padding: '12px 0', borderTop: '1px solid var(--border)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 16 }}>{status.skill_installed ? '✅' : '⬜'}</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>
+                    步骤 4：安装 OpenClaw 技能（让 AI 直接调用）
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
+                    {status.skill_installed
+                      ? '已安装 — AI 可直接用「同步到头条」等指令操作'
+                      : '安装后 AI 能自动调用 wechatsync，无需手动敲命令'}
+                  </div>
+                </div>
+                {!status.skill_installed && (
+                  <button className="btn btn-sm btn-primary" disabled={skillBusy} onClick={handleInstallSkill}>
+                    {skillBusy ? '安装中…' : '一键安装'}
+                  </button>
+                )}
+              </div>
+              {!status.skill_installed && (
+                <div style={{ marginTop: 8, padding: '10px 12px', background: 'var(--surface)', borderRadius: 6, fontSize: 12, lineHeight: 1.7, color: 'var(--text-secondary)' }}>
+                  安装后 AI 能识别「同步到头条/掘金/CSDN」等指令，自动调用 wechatsync CLI 执行同步。
+                  支持 27+ 平台，比手动操作更方便。
                 </div>
               )}
             </div>
