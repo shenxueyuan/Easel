@@ -2108,6 +2108,9 @@ async def api_wechatsync_extension_action(req: ExtensionInstallRequest):
             return {'ok': False, 'message': f'解压失败：{e}'}
 
     raise HTTPException(400, 'action 必须是 unzip | download')
+
+
+class WechatsyncTokenRequest(BaseModel):
     token: str
 
 
