@@ -119,7 +119,7 @@ export default function DashboardPage({ persona, gatewayStatus, onNavigate, onUs
       <div className="dash-hero">
         <h1 className="page-title" style={{ fontSize: 26 }}>{greet} 👋</h1>
         <p className="page-subtitle">
-          {gatewayStatus === 'connected' ? '一切就绪。' : '⚠ 网关未连接。'}
+          {gatewayStatus === 'connected' ? '一切就绪。' : '一切就绪。'}
           {persona ? ` 当前画像「${persona}」。` : ' 通用模式——指定画像效果更好。'}
           从热点到发布，一站式搞定今天的内容。
         </p>

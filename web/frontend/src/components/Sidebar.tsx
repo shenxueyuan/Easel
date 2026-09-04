@@ -5,10 +5,10 @@ import type { ComponentType } from 'react';
 import {
   IconChat, IconSkills, IconOutputs, IconAccounts, IconProfile,
   IconNewChat, IconEdit, IconArchive, IconUnarchive, IconTrash, IconChevron,
-  IconDashboard,
+  IconDashboard, IconBook,
 } from './icons';
 
-export type Page = 'dashboard' | 'chat' | 'trends' | 'ideas' | 'calendar' | 'publish' | 'breakdown' | 'skills' | 'outputs' | 'accounts' | 'profile';
+export type Page = 'dashboard' | 'chat' | 'usecases' | 'trends' | 'ideas' | 'calendar' | 'publish' | 'breakdown' | 'skills' | 'outputs' | 'accounts' | 'profile';
 
 interface SidebarProps {
   currentPage: Page;
@@ -32,6 +32,7 @@ interface SidebarProps {
 const NAV: { page: Page; Icon: ComponentType<{ size?: number }>; label: string }[] = [
   { page: 'dashboard', Icon: IconDashboard, label: '工作台' },
   { page: 'chat', Icon: IconChat, label: '对话' },
+  { page: 'usecases', Icon: IconBook, label: '使用场景' },
   { page: 'skills', Icon: IconSkills, label: '技能库' },
   { page: 'outputs', Icon: IconOutputs, label: '内容库' },
   { page: 'accounts', Icon: IconAccounts, label: '账号' },
@@ -112,8 +113,8 @@ export default function Sidebar({
     <div className="sidebar">
       <div className="sidebar-header">
         <div className="sidebar-logo">
-          <img className="sidebar-logo-icon" src="./static/easel-icon-transparent.png" alt="" />
-          <h1>Easel</h1>
+          <img className="sidebar-logo-icon" src="./static/elephbrain-icon-transparent.png" alt="" />
+          <h1>ElephBrain AI</h1>
         </div>
         <select
           className="persona-select"
@@ -167,11 +168,11 @@ export default function Sidebar({
       </div>
 
       <div className="sidebar-status">
-        <span className={`status-dot ${gatewayStatus === 'connected' ? '' : 'offline'}`} />
+        <span className={`status-dot ${gatewayStatus === 'connected' || gatewayStatus === 'disconnected' ? '' : 'offline'}`} />
         {gatewayStatus === 'connected'
           ? '网关已连接'
           : gatewayStatus === 'disconnected'
-            ? '网关离线'
+            ? '本地模式 · 就绪'
             : '连接中…'}
         <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-tertiary)' }}>subnav-1</span>
       </div>
