@@ -43,16 +43,26 @@ def _step(label: str, cmd: list[str], timeout: int = 30,
     return ok
 
 
+def _gateway_enabled() -> bool:
+    """本地嵌入模式默认不启动 Gateway；只有显式启用才算必需。"""
+    val = os.environ.get("EASEL_GATEWAY", "").strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
 def cmd_ping(_args) -> int:
     print("[easel] 连通性测试\n")
     all_ok = True
 
-    # Step 1: Gateway healthz
-    all_ok &= _step(
-        "Step 1: Gateway healthz (localhost:18789)",
-        ["curl", "-sf", "http://localhost:18789/healthz"],
-        timeout=10,
-    )
+    # Step 1: Gateway healthz（本地嵌入模式下为可选项，不启动不算失败）
+    if _gateway_enabled():
+        all_ok &= _step(
+            "Step 1: Gateway healthz (localhost:18789)",
+            ["curl", "-sf", "http://localhost:18789/healthz"],
+            timeout=10,
+        )
+    else:
+        print("  Step 1: Gateway healthz (localhost:18789)          "
+              f"{GREEN}跳过{NC}（本地嵌入模式，未启用 Gateway）")
 
     # Step 2: OpenClaw agent
     all_ok &= _step(

@@ -4,7 +4,7 @@ set -euo pipefail
 # Easel — 同步 SKILL + workspace 到 OpenClaw 的 easel 隔离 profile
 #
 # --profile easel 的实际路径：
-#   workspace → ~/.openclaw/workspace-easel/
+#   workspace → ~/.openclaw-easel/workspace/
 #   config    → ~/.openclaw-easel/openclaw.json
 #
 # 用法：bash openclaw/sync.sh
@@ -13,8 +13,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 PROFILE="easel"
-# --profile easel 的 workspace 在 ~/.openclaw/workspace-easel/
-OPENCLAW_WORKSPACE_DST="$HOME/.openclaw/workspace-${PROFILE}"
+# --profile easel 的 workspace 在 ~/.openclaw-easel/workspace/
+OPENCLAW_WORKSPACE_DST="$HOME/.openclaw-${PROFILE}/workspace"
 OPENCLAW_SKILL_DST="$OPENCLAW_WORKSPACE_DST/skills"
 OPENCLAW_WORKSPACE_SRC="$SCRIPT_DIR/workspace"
 OPENCLAW_SKILL_SRC="$PROJECT_ROOT/skills/openclaw"
@@ -27,19 +27,12 @@ echo ""
 mkdir -p "$OPENCLAW_SKILL_DST"
 mkdir -p "$OPENCLAW_WORKSPACE_DST"
 
-# ---- 清理已删除的 SKILL ----
-# 收集源目录中存在的 SKILL 名单，删除 workspace 中多余的
-declare -A SRC_SKILLS
-for skill_dir in "$OPENCLAW_SKILL_SRC"/*/; do
-    [ -d "$skill_dir" ] || continue
-    SRC_SKILLS[$(basename "$skill_dir")]=1
-done
+# ---- 标记已删除的 SKILL ----
 for dst_dir in "$OPENCLAW_SKILL_DST"/*/; do
     [ -d "$dst_dir" ] || continue
     name=$(basename "$dst_dir")
-    if [ -z "${SRC_SKILLS[$name]+x}" ]; then
-        rm -rf "$dst_dir"
-        echo "  ✗ $name (removed — no longer in source)"
+    if [ ! -d "$OPENCLAW_SKILL_SRC/$name" ]; then
+        echo "  ! $name (stale — source no longer exists)"
     fi
 done
 
@@ -51,8 +44,8 @@ synced=0
 for skill_dir in "$OPENCLAW_SKILL_SRC"/*/; do
     [ -d "$skill_dir" ] || continue
     name=$(basename "$skill_dir")
-    rm -rf "$OPENCLAW_SKILL_DST/$name"
-    cp -r "$skill_dir" "$OPENCLAW_SKILL_DST/$name"
+    mkdir -p "$OPENCLAW_SKILL_DST/$name"
+    cp -R "$skill_dir/." "$OPENCLAW_SKILL_DST/$name/"
     echo "  ✓ $name"
     synced=$((synced + 1))
 done
@@ -64,8 +57,8 @@ echo ""
 SHARED_SRC="$PROJECT_ROOT/skills/shared"
 SHARED_DST="$OPENCLAW_WORKSPACE_DST/shared"
 if [ -d "$SHARED_SRC" ]; then
-    rm -rf "$SHARED_DST"
-    cp -r "$SHARED_SRC" "$SHARED_DST"
+    mkdir -p "$SHARED_DST"
+    cp -R "$SHARED_SRC/." "$SHARED_DST/"
     echo "Shared: ✓ synced → workspace/shared/ ($(find "$SHARED_DST" -type f | wc -l) files)"
     echo ""
 fi
@@ -75,7 +68,11 @@ echo "Workspace:"
 for f in "$OPENCLAW_WORKSPACE_SRC"/*.md; do
     [ -f "$f" ] || continue
     name=$(basename "$f")
-    cp "$f" "$OPENCLAW_WORKSPACE_DST/$name"
+    target="$OPENCLAW_WORKSPACE_DST/$name"
+    if [ -f "$target" ] && ! cmp -s "$f" "$target"; then
+        cp "$target" "${target}.backup-$(date +%Y%m%d%H%M%S)"
+    fi
+    cp "$f" "$target"
     echo "  ✓ $name"
 done
 
@@ -99,33 +96,37 @@ AGENTROOTEOF
 echo "  ✓ AGENTS.md runtime project root"
 echo ""
 
-# ---- 清理已废弃的全局 USER.md ----
-# 画像已改为「消息内联」注入（见 docs/prompt-stack.md），不再写全局 USER.md。
-# 清掉历史残留，避免旧画像污染 system prompt。
-rm -f "$OPENCLAW_WORKSPACE_DST/USER.md" 2>/dev/null && echo "Cleanup: ✓ 移除残留 USER.md" || true
-# Easel 的长期记忆按画像隔离；全局 MEMORY.md 必须保持为空，避免跨画像污染。
-: > "$OPENCLAW_WORKSPACE_DST/MEMORY.md"
-echo "Cleanup: ✓ 清空全局 MEMORY.md（画像记忆按会话读取）"
+# ---- 保留全局用户文件 ----
+# Easel 通过 memory.search.enabled=false 禁用全局检索，不修改用户已有的 USER.md / MEMORY.md。
+[ -f "$OPENCLAW_WORKSPACE_DST/MEMORY.md" ] || : > "$OPENCLAW_WORKSPACE_DST/MEMORY.md"
+echo "Workspace memory: ✓ preserved"
 echo ""
 
 # ---- Profile 目录 symlink ----
 # 注意：必须先删除旧 symlink 再创建，否则 ln -sf 会跟着旧 symlink 进入目标目录创建循环
 PROFILE_LINK="$OPENCLAW_WORKSPACE_DST/easel-profiles"
-rm -f "$PROFILE_LINK" 2>/dev/null
-ln -s "$PROJECT_ROOT/profiles" "$PROFILE_LINK"
-echo "Profiles: ✓ symlinked → $PROJECT_ROOT/profiles"
+if [ -e "$PROFILE_LINK" ] && [ ! -L "$PROFILE_LINK" ]; then
+    echo "Profiles: ! 保留现有目录 $PROFILE_LINK"
+else
+    ln -sfn "$PROJECT_ROOT/profiles" "$PROFILE_LINK"
+    echo "Profiles: ✓ symlinked → $PROJECT_ROOT/profiles"
+fi
 
 # ---- outputs 目录 symlink ----
 # Agent CWD 是 workspace，SKILL 写 outputs/ 会落到 workspace 内
 # 通过 symlink 让 workspace/outputs/ → 项目 outputs/，产物自动归位
 OUTPUTS_LINK="$OPENCLAW_WORKSPACE_DST/outputs"
+mkdir -p "$PROJECT_ROOT/outputs"
 if [ -d "$OUTPUTS_LINK" ] && [ ! -L "$OUTPUTS_LINK" ]; then
-    # 真目录残留，搬走内容后删除
-    cp -rn "$OUTPUTS_LINK"/* "$PROJECT_ROOT/outputs/" 2>/dev/null || true
-    rm -rf "$OUTPUTS_LINK"
+    OUTPUTS_BACKUP="${OUTPUTS_LINK}.backup-$(date +%Y%m%d%H%M%S)"
+    mv "$OUTPUTS_LINK" "$OUTPUTS_BACKUP"
+    if ! cp -Rn "$OUTPUTS_BACKUP/." "$PROJECT_ROOT/outputs/"; then
+        echo "Outputs: ! 部分同名文件未覆盖；完整原目录保留为 $OUTPUTS_BACKUP"
+    else
+        echo "Outputs: ✓ 原目录已保留为 $OUTPUTS_BACKUP"
+    fi
 fi
-rm -f "$OUTPUTS_LINK" 2>/dev/null
-ln -s "$PROJECT_ROOT/outputs" "$OUTPUTS_LINK"
+ln -sfn "$PROJECT_ROOT/outputs" "$OUTPUTS_LINK"
 echo "Outputs: ✓ symlinked → $PROJECT_ROOT/outputs"
 echo ""
 

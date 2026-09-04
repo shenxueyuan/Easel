@@ -13,6 +13,7 @@ dependencies = [
     "uvicorn",        # ASGI server（easel web）
     "sse-starlette",  # 对话流式 SSE
     "pydantic",       # 请求模型
+    "python-multipart", # FastAPI 文件上传表单
     "segno",          # B站扫码登录二维码渲染（纯 Python）
 ]
 
@@ -21,9 +22,9 @@ dependencies = [
 # 另需系统 ffmpeg，以及浏览器发布用 `playwright install chromium`（见 README）。
 [project.optional-dependencies]
 media = [
-    "Pillow", "opencv-python", "numpy", "pandas", "matplotlib", "librosa",
+    "Pillow", "opencv-python>=4.10,<5", "numpy", "pandas", "matplotlib", "librosa",
     "faster-whisper", "edge-tts",
-    "playwright", "rembg", "biliup",
+    "playwright", "rembg", "onnxruntime", "biliup",
     "jieba", "snownlp", "markdown",
 ]
 

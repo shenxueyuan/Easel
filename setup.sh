@@ -22,6 +22,7 @@ NC='\033[0m'
 info()  { echo -e "${CYAN}[easel]${NC} $*"; }
 ok()    { echo -e "${GREEN}  ✓${NC} $*"; }
 warn()  { echo -e "${YELLOW}  ⚠${NC} $*"; }
+fail()  { echo -e "${RED}  ✗${NC} $*"; }
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -31,35 +32,59 @@ echo ""
 info "环境隔离：~/.openclaw-${PROFILE}/（不影响本机 OpenClaw）"
 echo ""
 
-# ---- 1. Node.js >= 22.19 ----
-info "检查 Node.js..."
-NODE_OK=false
-if command -v node &>/dev/null; then
-    NODE_VER=$(node -v | sed 's/v//')
-    NODE_MAJOR=$(echo "$NODE_VER" | cut -d. -f1)
-    NODE_MINOR=$(echo "$NODE_VER" | cut -d. -f2)
-    if [ "$NODE_MAJOR" -gt 22 ] || { [ "$NODE_MAJOR" -eq 22 ] && [ "$NODE_MINOR" -ge 19 ]; }; then
-        NODE_OK=true
-    fi
-fi
+# ---- 1. Node.js >= 22.22.3 ----
+find_node() {
+    local candidates=(
+        "/opt/homebrew/opt/node@22/bin"
+        "/opt/homebrew/bin"
+        "/usr/local/bin"
+        "$(dirname "$(command -v node 2>/dev/null || echo /nonexistent/node)")"
+    )
+    for dir in "${candidates[@]}"; do
+        local node="$dir/node"
+        [ -x "$node" ] || continue
+        if "$node" -e 'const [a,b,c]=process.versions.node.split(".").map(Number); process.exit((a===22&&(b>22||(b===22&&c>=3)))||(a===24&&b>=15)||a>=25?0:1)' 2>/dev/null; then
+            echo "$dir"
+            return 0
+        fi
+    done
+    return 1
+}
 
-if $NODE_OK; then
-    ok "Node.js $NODE_VER"
-else
+info "检查 Node.js..."
+NODE_BIN_DIR="$(find_node || true)"
+if [ -z "$NODE_BIN_DIR" ] && [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
     info "安装 Node.js 22..."
-    NODE_TARGET="v22.23.1"
-    curl -fL --max-time 120 "https://nodejs.org/dist/${NODE_TARGET}/node-${NODE_TARGET}-linux-x64.tar.xz" -o /tmp/node22.tar.xz
-    cd /tmp && tar xf node22.tar.xz
-    cp -rf node-${NODE_TARGET}-linux-x64/bin/* /usr/local/bin/
-    cp -rf node-${NODE_TARGET}-linux-x64/lib/* /usr/local/lib/
-    rm -rf /tmp/node-${NODE_TARGET}-linux-x64 /tmp/node22.tar.xz
-    cd "$PROJECT_ROOT"
-    ok "Node.js $(node -v)"
+    brew install node@22
+    NODE_BIN_DIR="$(find_node || true)"
 fi
+if [ -z "$NODE_BIN_DIR" ]; then
+    fail "找不到 OpenClaw 兼容的 Node.js；请安装 Node.js 22.22.3+、24.15+ 或 25.9+"
+    exit 1
+fi
+export PATH="$NODE_BIN_DIR:/opt/homebrew/opt/ffmpeg-full/bin:/opt/homebrew/bin:$PATH"
+ok "Node.js $(node --version)"
 
 # ---- 2. npm 源 ----
 npm config set registry https://registry.npmjs.org 2>/dev/null
 ok "npm registry: npmjs.org"
+
+info "检查完整 ffmpeg..."
+if ! command -v ffmpeg >/dev/null 2>&1 || ! ffmpeg -hide_banner -filters 2>/dev/null | grep ' drawtext ' >/dev/null; then
+    if [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
+        brew install ffmpeg-full
+        export PATH="/opt/homebrew/opt/ffmpeg-full/bin:$PATH"
+        hash -r
+    else
+        fail "需要带 drawtext 滤镜的 ffmpeg"
+        exit 1
+    fi
+fi
+if ! ffmpeg -hide_banner -filters 2>/dev/null | grep ' drawtext ' >/dev/null; then
+    fail "ffmpeg 已安装但仍缺少 drawtext 滤镜"
+    exit 1
+fi
+ok "ffmpeg 已安装并支持 drawtext"
 
 # ---- 3. 安装 OpenClaw ----
 info "检查 OpenClaw..."
@@ -67,7 +92,7 @@ if command -v openclaw &>/dev/null; then
     ok "OpenClaw $(openclaw --version 2>&1 | head -1)"
 else
     info "安装 OpenClaw..."
-    npm install -g openclaw@latest --loglevel warn 2>&1 | tail -1
+    npm install -g openclaw@2026.8.2 --loglevel warn 2>&1 | tail -1
     ok "OpenClaw $(openclaw --version 2>&1 | head -1)"
 fi
 
@@ -80,10 +105,27 @@ else
     ok "Profile 初始化完成 → ~/.openclaw-${PROFILE}/"
 fi
 
-# ---- 5. 安装 easel CLI ----
-info "安装 easel CLI..."
-pip install -e "$PROJECT_ROOT" --quiet 2>&1 | tail -1
-ok "easel 命令可用"
+# ---- 5. 创建统一 Python 环境并安装全部功能依赖 ----
+info "创建项目 Python 虚拟环境..."
+PYTHON_BASE=""
+for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 "$(command -v python3 2>/dev/null || true)"; do
+    if [ -x "$candidate" ] && "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+        PYTHON_BASE="$candidate"
+        break
+    fi
+done
+if [ -z "$PYTHON_BASE" ]; then
+    fail "需要 Python 3.10 或更高版本"
+    exit 1
+fi
+if [ ! -x "$PROJECT_ROOT/.venv/bin/python" ]; then
+    "$PYTHON_BASE" -m venv "$PROJECT_ROOT/.venv"
+fi
+PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
+"$PYTHON_BIN" -m pip install --upgrade pip setuptools wheel --quiet
+"$PYTHON_BIN" -m pip install -e "$PROJECT_ROOT[media]" --quiet
+"$PYTHON_BIN" -m playwright install chromium
+ok "完整 Python 环境已安装 → .venv"
 
 # ---- 6. 构建 Web 前端（Node 已装 → easel web 直接出真 UI，无需手动构建） ----
 info "构建 Web 前端..."
@@ -91,13 +133,14 @@ if [ -d "$PROJECT_ROOT/web/frontend" ]; then
     (
         cd "$PROJECT_ROOT/web/frontend"
         if [ -f package-lock.json ]; then npm ci --silent || npm install --silent; else npm install --silent; fi
+        npm run lint
         npm run build
-    ) >/dev/null 2>&1 || true
-    if [ -f "$PROJECT_ROOT/web/frontend/dist/index.html" ]; then
-        ok "前端已构建 → web/frontend/dist/"
-    else
-        warn "前端构建未完成，easel web 会回退简易页；可手动：cd web/frontend && npm ci && npm run build"
+    )
+    if [ ! -f "$PROJECT_ROOT/web/frontend/dist/index.html" ]; then
+        fail "前端构建未生成 dist/index.html"
+        exit 1
     fi
+    ok "前端检查与构建完成 → web/frontend/dist/"
 else
     warn "未找到 web/frontend，跳过前端构建"
 fi
@@ -127,12 +170,12 @@ if [ -n "${OPENAI_MAAS_API_KEY:-}" ]; then
     OPENAI_PORT="${OPENAI_MAAS_ADAPTER_PORT:-18791}"
     OPENAI_ENDPOINT="${OPENAI_MAAS_ENDPOINT:?OPENAI_MAAS_ENDPOINT is required}"
     # A new custom provider must be written atomically or OpenClaw rejects the incomplete intermediate state.
-    OPENAI_PROVIDER_CONFIG=$(python3 - "$PROJECT_ROOT" "$OPENAI_PORT" "$OPENAI_MODEL" \
-        "$OPENAI_ENDPOINT" "$OPENAI_MAAS_API_KEY" <<'PY'
+    OPENAI_PROVIDER_CONFIG=$("$PYTHON_BIN" - "$PROJECT_ROOT" "$OPENAI_PORT" "$OPENAI_MODEL" \
+        "$OPENAI_ENDPOINT" "$OPENAI_MAAS_API_KEY" "$PYTHON_BIN" <<'PY'
 import json
 import sys
 
-root, port, model, endpoint, api_key = sys.argv[1:]
+root, port, model, endpoint, api_key, python_bin = sys.argv[1:]
 print(json.dumps({
     "baseUrl": f"http://127.0.0.1:{port}/v1",
     "api": "openai-completions",
@@ -146,7 +189,7 @@ print(json.dumps({
         "input": ["text"],
     }],
     "localService": {
-        "command": "/usr/bin/python3",
+        "command": python_bin,
         "args": [f"{root}/scripts/openai_maas_adapter.py", "--port", port],
         "cwd": root,
         "healthUrl": f"http://127.0.0.1:{port}/health",
@@ -176,7 +219,7 @@ elif [ -n "${GEMINI_MAAS_API_KEY:-}" ]; then
         --strict-json 2>&1 | tail -1
     $OC config set models.providers."$GEMINI_PROVIDER".timeoutSeconds 600 --strict-json 2>&1 | tail -1
     $OC config set models.providers."$GEMINI_PROVIDER".request.allowPrivateNetwork true --strict-json 2>&1 | tail -1
-    $OC config set models.providers."$GEMINI_PROVIDER".localService.command "/usr/bin/python3" 2>&1 | tail -1
+    $OC config set models.providers."$GEMINI_PROVIDER".localService.command "$PYTHON_BIN" 2>&1 | tail -1
     $OC config set models.providers."$GEMINI_PROVIDER".localService.args \
         "[\"$PROJECT_ROOT/scripts/gemini_maas_adapter.py\",\"--port\",\"${GEMINI_ADAPTER_PORT:-18790}\"]" \
         --strict-json 2>&1 | tail -1
@@ -197,6 +240,7 @@ elif [ -n "${GEMINI_MAAS_API_KEY:-}" ]; then
     DEFAULT_PRIMARY_MODEL="$GEMINI_PROVIDER/$GEMINI_MODEL"
     ok "Gemini-compatible 服务已通过本地适配器同步"
 elif [ -n "${EASEL_LLM_API_KEY:-}" ]; then
+    DEFAULT_PRIMARY_MODEL="${CLAUDE_MODEL:-anthropic/claude-sonnet-4-6}"
     $OC config set models.providers.anthropic.apiKey "$EASEL_LLM_API_KEY" 2>&1 | tail -1
     $OC config set models.providers.anthropic.baseUrl "$EASEL_LLM_BASE_URL" 2>&1 | tail -1
     $OC config set models.providers.anthropic.headers."${EASEL_LLM_API_KEY_HEADER:-api-key}" \
@@ -210,6 +254,7 @@ elif [ -n "${EASEL_LLM_API_KEY:-}" ]; then
     $OC config unset models.providers.anthropic.headers.X-Adapter-Source-Version >/dev/null 2>&1 || true
     ok "自定义 Anthropic 兼容 MaaS 认证已同步"
 elif [ -n "${ANTHROPIC_API_KEY:-}" ] && [ "$ANTHROPIC_API_KEY" != "sk-ant-REPLACE_ME" ]; then
+    DEFAULT_PRIMARY_MODEL="${CLAUDE_MODEL:-anthropic/claude-sonnet-4-6}"
     $OC config set models.providers.anthropic.apiKey "$ANTHROPIC_API_KEY" 2>&1 | tail -1
     ok "API key 已同步"
 else
@@ -219,11 +264,11 @@ fi
 # ---- 10. OpenClaw agent 模型 + 超时 ----
 # CLAUDE_MODEL 保留旧变量名以兼容现有环境，值必须是 OpenClaw 的 provider/model。
 # 不要填内部 proxy 映射名（如 claude-4.6-opus-google），否则 OpenClaw 不认识。
-$OC config set agents.defaults.model.primary "${CLAUDE_MODEL:-$DEFAULT_PRIMARY_MODEL}" 2>&1 | tail -1
+$OC config set agents.defaults.model.primary "$DEFAULT_PRIMARY_MODEL" 2>&1 | tail -1
 # 整个 agent run 的总时长上限。制作层任务（OpenClaw 自执行短剧/长稿/多镜）很久 → 给足。
 $OC config set agents.defaults.timeoutSeconds 7200 2>&1 | tail -1
 # Easel 使用 profiles/<当前画像>/memory.md；关闭 OpenClaw 全局记忆索引，避免旧索引跨画像召回。
-$OC config set agents.defaults.memorySearch.enabled false --strict-json 2>&1 | tail -1
+$OC config set memory.search.enabled false --strict-json 2>&1 | tail -1
 # 单次 LLM 请求的「空闲超时」（等模型开始/继续产出 token 的最长时间）。内部网关对大上下文/带思考的
 # 请求首 token 可能较慢，不设会用默认较短值 → 报「model did not produce a response before the model
 # idle timeout」而中断整个 run。与 agents.defaults.timeoutSeconds 是两回事，provider 超时不能延长整个 run。
@@ -231,9 +276,17 @@ $OC config set models.providers.anthropic.timeoutSeconds 600 2>&1 | tail -1
 $OC config set gateway.mode local 2>&1 | tail -1
 $OC config set gateway.bind loopback 2>&1 | tail -1
 
-# ---- 11. 启动 gateway ----
-info "启动 Easel gateway..."
-bash "$PROJECT_ROOT/scripts/gateway.sh" start
+# ---- 11. 配置免费 Web 搜索并执行完整环境检查 ----
+info "配置 Web 搜索..."
+if ! $OC plugins inspect parallel >/dev/null 2>&1; then
+    $OC plugins install @openclaw/parallel-plugin@2026.8.2 --accept-capabilities
+fi
+$OC config set tools.web.search.enabled true --strict-json 2>&1 | tail -1
+$OC config set tools.web.search.provider parallel-free 2>&1 | tail -1
+ok "Web 搜索已配置 → parallel-free"
+
+info "执行完整环境检查..."
+"$PYTHON_BIN" -m easel doctor
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -241,10 +294,9 @@ echo -e "  ${GREEN}安装完成！${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "  开始使用："
-echo "    easel web                    # 启动 Web UI（浏览器访问）"
-echo "    easel chat                   # 终端里跟 Easel 对话"
-echo "    easel doctor                 # 检查环境"
-echo "    easel ping                   # 连通性测试"
+echo "    bash start.sh                # 启动完整 Web 工作台"
+echo "    .venv/bin/easel doctor       # 检查全部功能与工具"
+echo "    .venv/bin/easel ping         # 连通性测试"
 echo ""
 echo "  环境隔离："
 echo "    Easel 配置 → ~/.openclaw-${PROFILE}/"
