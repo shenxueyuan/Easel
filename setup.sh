@@ -285,6 +285,20 @@ $OC config set tools.web.search.enabled true --strict-json 2>&1 | tail -1
 $OC config set tools.web.search.provider parallel-free 2>&1 | tail -1
 ok "Web 搜索已配置 → parallel-free"
 
+info "下载 Wechatsync Chrome 扩展包..."
+EXT_DIR="$PROJECT_ROOT/assets/extensions"
+mkdir -p "$EXT_DIR"
+if [ ! -f "$EXT_DIR/wechatsync-2.0.9.zip" ]; then
+    if curl -sf -L -o "$EXT_DIR/wechatsync-2.0.9.zip" \
+        "https://wpics.oss-cn-shanghai.aliyuncs.com/wechatsync-2.0.9.zip?date=20260324" 2>/dev/null; then
+        ok "Wechatsync 扩展包已下载"
+    else
+        warn "Wechatsync 扩展包下载失败（可从 Chrome 应用商店手动安装）"
+    fi
+else
+    ok "Wechatsync 扩展包已存在"
+fi
+
 info "执行完整环境检查..."
 "$PYTHON_BIN" -m easel doctor
 

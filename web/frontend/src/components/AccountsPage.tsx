@@ -4,10 +4,11 @@ import {
   accountWhoami, logoutAccount, submitLoginSms,
   fetchWechatMpConfig, saveWechatMpAccount, deleteWechatMpAccount,
   checkWechatsync, installWechatsyncCli, installWechatsyncSkill, saveWechatsyncToken,
+  checkWechatsyncExtension, extensionAction,
 } from '../lib/api';
 import type {
   AccountItem, AccountWhoami,
-  WechatMpConfig, WechatMpAccount, WechatsyncStatus,
+  WechatMpConfig, WechatMpAccount, WechatsyncStatus, WechatsyncExtensionStatus,
 } from '../lib/api';
 import { getWhoamiCache, setWhoamiCache, verifyStale } from '../lib/whoami';
 
@@ -624,15 +625,17 @@ function WechatsyncSection() {
   const [loading, setLoading] = useState(true);
   const [cliBusy, setCliBusy] = useState(false);
   const [skillBusy, setSkillBusy] = useState(false);
+  const [extStatus, setExtStatus] = useState<WechatsyncExtensionStatus | null>(null);
+  const [extBusy, setExtBusy] = useState('');
   const [tokenInput, setTokenInput] = useState('');
   const [tokenSaving, setTokenSaving] = useState(false);
   const [msg, setMsg] = useState('');
 
   const load = useCallback(() => {
     setLoading(true);
-    checkWechatsync()
-      .then((s) => { setStatus(s); setLoading(false); })
-      .catch(() => { setStatus(null); setLoading(false); });
+    Promise.all([checkWechatsync(), checkWechatsyncExtension()])
+      .then(([s, e]) => { setStatus(s); setExtStatus(e); setLoading(false); })
+      .catch(() => { setStatus(null); setExtStatus(null); setLoading(false); });
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -668,6 +671,23 @@ function WechatsyncSection() {
       setMsg(e instanceof Error ? e.message : '技能安装失败');
     } finally {
       setSkillBusy(false);
+    }
+  };
+
+  const handleExtAction = async (action: 'unzip' | 'launch' | 'download') => {
+    setExtBusy(action); setMsg('');
+    try {
+      const r = await extensionAction(action);
+      if (r.ok) {
+        setMsg(`✓ ${r.message}`);
+        load();
+      } else {
+        setMsg(`✗ ${r.message}`);
+      }
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : '操作失败');
+    } finally {
+      setExtBusy('');
     }
   };
 
@@ -708,34 +728,63 @@ function WechatsyncSection() {
 
         {status && (
           <div style={{ marginTop: 12 }}>
-            {/* 步骤 1：安装 Chrome 扩展（必须先做这步） */}
+            {/* 步骤 1：安装 Chrome 扩展（一键解压 + 启动 Chrome 加载） */}
             <div style={{ padding: '12px 0', borderBottom: '1px solid var(--border)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span style={{ fontSize: 16 }}>🧩</span>
+                <span style={{ fontSize: 16 }}>{extStatus?.unzipped ? '✅' : '🧩'}</span>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 600, fontSize: 13 }}>
-                    步骤 1：安装 Chrome 扩展（必须先做）
+                    步骤 1：安装 Chrome 扩展
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
-                    这是浏览器插件，装后浏览器右上角能看到图标。CLI 不是浏览器插件。
+                    {extStatus?.unzipped
+                      ? '扩展已解压就绪 — 点击「启动 Chrome 加载」'
+                      : '项目已预置扩展包，一键解压后启动 Chrome 自动加载'}
                   </div>
                 </div>
               </div>
               <div style={{ marginTop: 8, padding: '10px 12px', background: 'var(--surface)', borderRadius: 6, fontSize: 12, lineHeight: 1.7 }}>
-                <div style={{ fontWeight: 600, marginBottom: 4, color: 'var(--text)' }}>操作方法：</div>
                 <div style={{ color: 'var(--text-secondary)' }}>
-                  ① 打开 Chrome 浏览器<br />
-                  ② 访问{' '}
-                  <a href="https://chrome.google.com/webstore/detail/wechatsync" target="_blank" rel="noreferrer" style={{ color: 'var(--accent-start)' }}>
-                    Chrome 应用商店搜索 Wechatsync
-                  </a>{' '}
-                  或{' '}
-                  <a href="https://github.com/wechatsync/Wechatsync" target="_blank" rel="noreferrer" style={{ color: 'var(--accent-start)' }}>
-                    GitHub 下载
-                  </a><br />
-                  ③ 点击「添加到 Chrome」<br />
-                  ④ 安装后浏览器右上角出现 Wechatsync 图标 ✅
+                  扩展包已预置在项目 <code>assets/extensions/</code> 目录，无需去应用商店下载。<br />
+                  ① 点击「解压扩展」解压到本地<br />
+                  ② 点击「启动 Chrome」自动加载扩展<br />
+                  ③ Chrome 打开后右上角出现 Wechatsync 图标即安装成功
                 </div>
+                {extStatus && !extStatus.chrome_found && (
+                  <div style={{ marginTop: 6, color: 'var(--red)', fontSize: 11 }}>
+                    ⚠ 未检测到 Chrome 浏览器，请先安装 Chrome 或 Edge。
+                    也可手动从{' '}
+                    <a href="https://chrome.google.com/webstore/detail/hchobocdmclopcbnibdnoafilagadion" target="_blank" rel="noreferrer" style={{ color: 'var(--accent-start)' }}>
+                      Chrome 应用商店
+                    </a>{' '}
+                    安装。
+                  </div>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                {extStatus && !extStatus.unzipped && (
+                  <button className="btn btn-sm btn-primary" disabled={!!extBusy}
+                    onClick={() => handleExtAction('unzip')}>
+                    {extBusy === 'unzip' ? '解压中…' : '解压扩展'}
+                  </button>
+                )}
+                {extStatus?.unzipped && (
+                  <button className="btn btn-sm btn-primary" disabled={!!extBusy || !extStatus.chrome_found}
+                    onClick={() => handleExtAction('launch')}>
+                    {extBusy === 'launch' ? '启动中…' : '启动 Chrome 加载'}
+                  </button>
+                )}
+                {extStatus && !extStatus.zip_exists && (
+                  <button className="btn btn-sm" disabled={!!extBusy}
+                    onClick={() => handleExtAction('download')}>
+                    {extBusy === 'download' ? '下载中…' : '下载扩展包'}
+                  </button>
+                )}
+                <a href="https://chrome.google.com/webstore/detail/hchobocdmclopcbnibdnoafilagadion"
+                  target="_blank" rel="noreferrer"
+                  style={{ fontSize: 11, color: 'var(--accent-start)', alignSelf: 'center' }}>
+                  或从应用商店安装 →
+                </a>
               </div>
             </div>
 

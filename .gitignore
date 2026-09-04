@@ -76,3 +76,5 @@ skill-test/
 *.orig
 *.tmp
 *.swp
+assets/extensions/*.zip
+assets/extensions/wechatsync/

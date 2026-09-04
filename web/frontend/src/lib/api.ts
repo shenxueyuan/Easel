@@ -430,6 +430,28 @@ export function installWechatsyncSkill(): Promise<{
   return request('/api/wechatsync/skill', { method: 'POST' });
 }
 
+export interface WechatsyncExtensionStatus {
+  zip_exists: boolean;
+  unzipped: boolean;
+  extension_dir: string;
+  chrome_found: boolean;
+  chrome_path: string;
+}
+
+export function checkWechatsyncExtension(): Promise<WechatsyncExtensionStatus> {
+  return request<WechatsyncExtensionStatus>('/api/wechatsync/extension');
+}
+
+export function extensionAction(action: 'unzip' | 'launch' | 'download'): Promise<{
+  ok: boolean; message: string;
+}> {
+  return request('/api/wechatsync/extension', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  });
+}
+
 export function saveWechatsyncToken(token: string): Promise<{ ok: boolean; configured: boolean }> {
   return request('/api/wechatsync/token', {
     method: 'POST',
