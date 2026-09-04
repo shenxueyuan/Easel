@@ -354,6 +354,83 @@ export function logoutAccount(platform: string): Promise<{ ok: boolean; deleted:
   return request(`/api/logout/${encodeURIComponent(platform)}`, { method: 'POST' });
 }
 
+// ============================================================
+// 微信公众号配置（在线读写 wechat-publisher.yaml）
+// ============================================================
+
+export interface WechatMpAccount {
+  key: string;
+  name: string;
+  app_id: string;
+  app_secret_masked: string;
+  app_secret_configured: boolean;
+  author: string;
+  theme: string;
+  is_default: boolean;
+}
+
+export interface WechatMpConfig {
+  configured: boolean;
+  default: string;
+  accounts: WechatMpAccount[];
+  sync_token_masked: string;
+  sync_token_configured: boolean;
+}
+
+export function fetchWechatMpConfig(): Promise<WechatMpConfig> {
+  return request<WechatMpConfig>('/api/wechat-mp/config');
+}
+
+export function saveWechatMpAccount(data: {
+  key: string; name?: string; app_id?: string; app_secret?: string;
+  author?: string; theme?: string; set_default?: boolean;
+}): Promise<{ ok: boolean; key: string }> {
+  return request('/api/wechat-mp/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteWechatMpAccount(key: string): Promise<{ ok: boolean }> {
+  return request(`/api/wechat-mp/config/${encodeURIComponent(key)}`, { method: 'DELETE' });
+}
+
+// ============================================================
+// Wechatsync 自检 + CLI 安装 + Token
+// ============================================================
+
+export interface WechatsyncStatus {
+  cli_installed: boolean;
+  cli_path: string;
+  cli_version: string | null;
+  token_configured: boolean;
+  token_masked: string;
+  ready: boolean;
+}
+
+export function checkWechatsync(): Promise<WechatsyncStatus> {
+  return request<WechatsyncStatus>('/api/wechatsync/check');
+}
+
+export function installWechatsyncCli(action: 'install' | 'uninstall' = 'install'): Promise<{
+  ok: boolean; stdout: string; stderr: string; returncode: number;
+}> {
+  return request('/api/wechatsync/cli', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  });
+}
+
+export function saveWechatsyncToken(token: string): Promise<{ ok: boolean; configured: boolean }> {
+  return request('/api/wechatsync/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  });
+}
+
 export interface PublishResult {
   ok?: boolean;
   message: string;

@@ -1852,6 +1852,197 @@ async def api_logout(platform: str):
     return {'ok': True, 'deleted': deleted}
 
 
+# ============================================================
+# 微信公众号配置（wechat-publisher.yaml 在线读写）
+# ============================================================
+
+WECHAT_YAML = PROJECT_ROOT / 'skills' / 'openclaw' / 'skill-wechat-publisher' / 'wechat-publisher.yaml'
+WECHAT_YAML_EXAMPLE = WECHAT_YAML.with_suffix('.yaml.example')
+
+
+def _load_wechat_yaml() -> dict:
+    """加载 wechat-publisher.yaml；不存在时返回空 dict。"""
+    if not WECHAT_YAML.is_file():
+        return {}
+    try:
+        import yaml
+        with open(WECHAT_YAML, 'r', encoding='utf-8') as f:
+            data = yaml.safe_load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_wechat_yaml(data: dict) -> None:
+    """原子写 wechat-publisher.yaml。"""
+    import yaml
+    tmp = WECHAT_YAML.with_suffix('.yaml.tmp')
+    with open(tmp, 'w', encoding='utf-8') as f:
+        yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    tmp.replace(WECHAT_YAML)
+
+
+def _mask_secret(val: str, keep: int = 4) -> str:
+    """脱敏：保留前 keep 位 + ***。空串返回空。"""
+    if not val:
+        return ''
+    if len(val) <= keep:
+        return '****'
+    return val[:keep] + '****' + val[-2:]
+
+
+@app.get("/api/wechat-mp/config")
+async def api_wechat_mp_config():
+    """读取公众号配置（脱敏 app_secret）。返回账号列表 + 默认账号。"""
+    data = _load_wechat_yaml()
+    accounts = data.get('accounts') or {}
+    default = data.get('default', '')
+    result = []
+    for key, acc in accounts.items():
+        result.append({
+            'key': key,
+            'name': acc.get('name', key),
+            'app_id': acc.get('app_id', '') or '',
+            'app_secret_masked': _mask_secret(acc.get('app_secret', '') or ''),
+            'app_secret_configured': bool(acc.get('app_secret')),
+            'author': acc.get('author', '') or '',
+            'theme': acc.get('theme', '') or '',
+            'is_default': key == default,
+        })
+    return {
+        'configured': WECHAT_YAML.is_file(),
+        'default': default,
+        'accounts': result,
+        'sync_token_masked': _mask_secret(
+            (data.get('integrations') or {}).get('wechatsync_mcp_token', '') or ''
+        ),
+        'sync_token_configured': bool((data.get('integrations') or {}).get('wechatsync_mcp_token')),
+    }
+
+
+class WechatMpSaveRequest(BaseModel):
+    key: str                    # 账号 key（如 main / tech）
+    name: str = ''              # 账号显示名
+    app_id: str = ''
+    app_secret: str = ''        # 空串=不修改
+    author: str = ''
+    theme: str = ''
+    set_default: bool = False
+
+
+@app.post("/api/wechat-mp/config")
+async def api_wechat_mp_save(req: WechatMpSaveRequest):
+    """新增或更新公众号账号配置。app_secret 空串=保留原值。"""
+    key = req.key.strip()
+    if not key:
+        raise HTTPException(400, '账号 key 不能为空')
+    data = _load_wechat_yaml()
+    if 'accounts' not in data or not isinstance(data['accounts'], dict):
+        data['accounts'] = {}
+    acc = data['accounts'].get(key, {})
+    acc['name'] = req.name.strip() or key
+    acc['app_id'] = req.app_id.strip()
+    if req.app_secret.strip():
+        acc['app_secret'] = req.app_secret.strip()
+    elif 'app_secret' not in acc:
+        acc['app_secret'] = ''
+    acc['author'] = req.author.strip()
+    acc['theme'] = req.theme.strip()
+    data['accounts'][key] = acc
+    if req.set_default or not data.get('default'):
+        data['default'] = key
+    _save_wechat_yaml(data)
+    return {'ok': True, 'key': key}
+
+
+@app.delete("/api/wechat-mp/config/{key}")
+async def api_wechat_mp_delete(key: str):
+    """删除公众号账号配置。"""
+    data = _load_wechat_yaml()
+    if key not in (data.get('accounts') or {}):
+        raise HTTPException(404, f'账号 {key} 不存在')
+    del data['accounts'][key]
+    if data.get('default') == key:
+        remaining = list(data['accounts'].keys())
+        data['default'] = remaining[0] if remaining else ''
+    _save_wechat_yaml(data)
+    return {'ok': True}
+
+
+# ============================================================
+# Wechatsync 自检 + CLI 安装 + Token 配置
+# ============================================================
+
+@app.get("/api/wechatsync/check")
+async def api_wechatsync_check():
+    """自检 Wechatsync 环境：CLI 是否安装、Token 是否配置。"""
+    import shutil as _shutil
+    cli_path = _shutil.which('wechatsync')
+    cli_version = None
+    if cli_path:
+        try:
+            r = subprocess.run([cli_path, '--version'], capture_output=True, text=True, timeout=10)
+            cli_version = (r.stdout or r.stderr or '').strip().splitlines()[0] if (r.stdout or r.stderr) else None
+        except Exception:
+            pass
+    data = _load_wechat_yaml()
+    token = (data.get('integrations') or {}).get('wechatsync_mcp_token', '') or ''
+    return {
+        'cli_installed': bool(cli_path),
+        'cli_path': cli_path or '',
+        'cli_version': cli_version,
+        'token_configured': bool(token),
+        'token_masked': _mask_secret(token),
+        'ready': bool(cli_path and token),
+    }
+
+
+class WechatsyncInstallRequest(BaseModel):
+    action: str = 'install'   # install | uninstall
+
+
+@app.post("/api/wechatsync/cli")
+async def api_wechatsync_cli(req: WechatsyncInstallRequest):
+    """安装或卸载 @wechatsync/cli。"""
+    if req.action == 'install':
+        cmd = ['npm', 'install', '-g', '@wechatsync/cli']
+    elif req.action == 'uninstall':
+        cmd = ['npm', 'uninstall', '-g', '@wechatsync/cli']
+    else:
+        raise HTTPException(400, 'action 必须是 install 或 uninstall')
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        return {
+            'ok': r.returncode == 0,
+            'stdout': (r.stdout or '')[-500:],
+            'stderr': (r.stderr or '')[-500:],
+            'returncode': r.returncode,
+        }
+    except subprocess.TimeoutExpired:
+        return {'ok': False, 'stdout': '', 'stderr': '安装超时（120s）', 'returncode': -1}
+    except Exception as e:
+        return {'ok': False, 'stdout': '', 'stderr': str(e), 'returncode': -1}
+
+
+class WechatsyncTokenRequest(BaseModel):
+    token: str
+
+
+@app.post("/api/wechatsync/token")
+async def api_wechatsync_token(req: WechatsyncTokenRequest):
+    """保存 Wechatsync MCP Token 到 wechat-publisher.yaml。"""
+    token = req.token.strip()
+    data = _load_wechat_yaml()
+    if 'integrations' not in data or not isinstance(data['integrations'], dict):
+        data['integrations'] = {}
+    if token:
+        data['integrations']['wechatsync_mcp_token'] = token
+    else:
+        data['integrations'].pop('wechatsync_mcp_token', None)
+    _save_wechat_yaml(data)
+    return {'ok': True, 'configured': bool(token)}
+
+
 # 归因层：可抓创作数据的平台（走 Playwright 登录态；bilibili 用 biliup cookies 不在此列）
 ANALYTICS_PLATFORMS = {"xiaohongshu", "douyin", "kuaishou", "zhihu", "weixin-channels", "bilibili"}
 

@@ -2,8 +2,13 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   fetchAccounts, startLogin, loginStatus, mediaUrl,
   accountWhoami, logoutAccount, submitLoginSms,
+  fetchWechatMpConfig, saveWechatMpAccount, deleteWechatMpAccount,
+  checkWechatsync, installWechatsyncCli, saveWechatsyncToken,
 } from '../lib/api';
-import type { AccountItem, AccountWhoami } from '../lib/api';
+import type {
+  AccountItem, AccountWhoami,
+  WechatMpConfig, WechatMpAccount, WechatsyncStatus,
+} from '../lib/api';
 import { getWhoamiCache, setWhoamiCache, verifyStale } from '../lib/whoami';
 
 type QRState = {
@@ -375,70 +380,11 @@ export default function AccountsPage() {
         })}
       </div>
 
-      {/* 微信公众号：走 API 模式，不在 LOGIN_RUNNERS 里，单独显示配置卡片 */}
-      <h2 style={{ fontSize: 15, fontWeight: 600, margin: '24px 0 10px', color: 'var(--text)' }}>
-        API 模式平台
-      </h2>
-      <div className="accounts-grid">
-        <div className="card account-card">
-          <div className="account-card-head">
-            <span className="account-card-name">微信公众号</span>
-            <span className="badge">API 配置</span>
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 6, lineHeight: 1.5 }}>
-            <div>登录方式：{WECHAT_MP_GUIDE.method}</div>
-            <div>内容类型：{WECHAT_MP_GUIDE.contentType}</div>
-            <div style={{ marginTop: 4 }}>{WECHAT_MP_GUIDE.tip}</div>
-            <div style={{ marginTop: 6, padding: '8px 10px', background: 'var(--surface)', borderRadius: 6, fontSize: 11 }}>
-              <div style={{ color: 'var(--text-secondary)', marginBottom: 2 }}>配置文件：</div>
-              <code style={{ fontSize: 10, wordBreak: 'break-all' }}>{WECHAT_MP_GUIDE.configPath}</code>
-              <div style={{ color: 'var(--text-secondary)', marginTop: 6, marginBottom: 2 }}>必填字段：</div>
-              <code style={{ fontSize: 10 }}>app_id / app_secret / author / theme</code>
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: 8, marginTop: 'auto' }}>
-            <button
-              className="btn btn-block"
-              onClick={() => window.alert(
-                '微信公众号配置方法：\n\n' +
-                '1. 登录 mp.weixin.qq.com → 设置 → 开发 → 基本配置\n' +
-                '2. 获取 AppID 和 AppSecret\n' +
-                '3. 把本机 IP 加入 IP 白名单\n' +
-                `4. 编辑配置文件：\n   ${WECHAT_MP_GUIDE.configPath}\n` +
-                '5. 填入 app_id / app_secret / author / theme\n' +
-                '6. 验证：\n   python skills/openclaw/skill-wechat-publisher/scripts/wechat_api.py list-accounts'
-              )}>
-              配置说明
-            </button>
-          </div>
-        </div>
-      </div>
+      {/* 微信公众号：在线配置 */}
+      <WechatMpConfigSection />
 
-      {/* Wechatsync 多平台同步（草稿模式） */}
-      <h2 style={{ fontSize: 15, fontWeight: 600, margin: '24px 0 10px', color: 'var(--text)' }}>
-        Wechatsync 同步平台（草稿模式，需额外配置）
-      </h2>
-      <div className="card" style={{ padding: 14, fontSize: 12, lineHeight: 1.6, color: 'var(--text-secondary)' }}>
-        <p style={{ margin: '0 0 8px' }}>
-          通过 Wechatsync Chrome 扩展同步图文到以下平台（均存为<b>草稿</b>，需手动确认发布）。
-          <b>当前未启用</b>，需装扩展 + CLI + Token。
-        </p>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
-          {['头条', '掘金', 'CSDN', '简书', 'SegmentFault', '开源中国', '博客园', '51CTO', 'InfoQ', '微博', '豆瓣', '百家号', '搜狐号'].map((p) => (
-            <span key={p} className="badge" style={{ fontSize: 11 }}>{p}</span>
-          ))}
-        </div>
-        <details style={{ marginTop: 10 }}>
-          <summary style={{ cursor: 'pointer', color: 'var(--accent-start)', fontSize: 12 }}>启用步骤</summary>
-          <ol style={{ margin: '8px 0 0', paddingLeft: 20, fontSize: 11 }}>
-            <li>Chrome 安装 Wechatsync 扩展，登录各目标平台</li>
-            <li>扩展设置里开「MCP 连接」，生成 Token</li>
-            <li><code>npm install -g @wechatsync/cli</code></li>
-            <li>在 <code>wechat-publisher.yaml</code> 填入 <code>wechatsync_mcp_token</code></li>
-            <li>自检：<code>python skills/openclaw/skill-wechat-publisher/scripts/multi_publish.py --check</code></li>
-          </ol>
-        </details>
-      </div>
+      {/* Wechatsync：在线自检 + 安装 + Token 配置 */}
+      <WechatsyncSection />
 
       {qr && (
         <div className="overlay" onClick={closeQr}>
@@ -493,5 +439,325 @@ export default function AccountsPage() {
         </div>
       )}
     </div>
+  );
+}
+
+
+// ============================================================
+// 微信公众号在线配置组件
+// ============================================================
+
+function WechatMpConfigSection() {
+  const [config, setConfig] = useState<WechatMpConfig | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState<WechatMpAccount | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ key: '', name: '', app_id: '', app_secret: '', author: '', theme: 'refined-blue', set_default: true });
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  const load = useCallback(() => {
+    setLoading(true);
+    fetchWechatMpConfig()
+      .then((c) => { setConfig(c); setLoading(false); })
+      .catch(() => { setConfig(null); setLoading(false); });
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const startEdit = (acc: WechatMpAccount) => {
+    setEditing(acc);
+    setForm({ key: acc.key, name: acc.name, app_id: acc.app_id, app_secret: '', author: acc.author, theme: acc.theme || 'refined-blue', set_default: acc.is_default });
+    setShowForm(true);
+    setMsg('');
+  };
+
+  const startAdd = () => {
+    setEditing(null);
+    setForm({ key: '', name: '', app_id: '', app_secret: '', author: '', theme: 'refined-blue', set_default: true });
+    setShowForm(true);
+    setMsg('');
+  };
+
+  const handleSave = async () => {
+    if (!form.key.trim()) { setMsg('账号 key 不能为空'); return; }
+    if (!form.app_id.trim()) { setMsg('AppID 不能为空'); return; }
+    if (!editing && !form.app_secret.trim()) { setMsg('AppSecret 不能为空（新增时必填）'); return; }
+    setSaving(true); setMsg('');
+    try {
+      await saveWechatMpAccount(form);
+      setShowForm(false);
+      load();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : '保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (key: string) => {
+    if (!window.confirm(`确定删除公众号账号「${key}」？`)) return;
+    try {
+      await deleteWechatMpAccount(key);
+      load();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : '删除失败');
+    }
+  };
+
+  return (
+    <>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '24px 0 10px' }}>
+        <h2 style={{ fontSize: 15, fontWeight: 600, margin: 0, color: 'var(--text)' }}>
+          微信公众号配置
+        </h2>
+        <button className="btn btn-sm btn-primary" onClick={startAdd}>+ 新增账号</button>
+      </div>
+
+      {loading && <div className="card" style={{ padding: 14, fontSize: 13, color: 'var(--text-tertiary)' }}>加载中…</div>}
+
+      {config && config.accounts.length === 0 && !loading && (
+        <div className="card" style={{ padding: 14, fontSize: 13, color: 'var(--text-secondary)' }}>
+          尚未配置公众号账号。点击「新增账号」填入 AppID 和 AppSecret 即可。
+          <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-tertiary)' }}>
+            获取方式：mp.weixin.qq.com → 设置 → 开发 → 基本配置 → 获取 AppID/AppSecret<br />
+            需把本机 IP 加入公众号 IP 白名单。
+          </div>
+        </div>
+      )}
+
+      <div className="accounts-grid">
+        {config?.accounts.map((acc) => (
+          <div key={acc.key} className="card account-card">
+            <div className="account-card-head">
+              <span className="account-card-name">{acc.name || acc.key}</span>
+              {acc.is_default && <span className="badge badge-ok">默认</span>}
+              {!acc.is_default && <span className="badge">{acc.key}</span>}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 6, lineHeight: 1.6 }}>
+              <div>AppID：<code>{acc.app_id || '未配置'}</code></div>
+              <div>AppSecret：{acc.app_secret_configured ? <span style={{ color: 'var(--green)' }}>{acc.app_secret_masked} ✓</span> : <span style={{ color: 'var(--red)' }}>未配置</span>}</div>
+              <div>作者：{acc.author || '—'}</div>
+              <div>主题：{acc.theme || '—'}</div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 'auto' }}>
+              <button className="btn btn-sm" style={{ flex: 1 }} onClick={() => startEdit(acc)}>编辑</button>
+              <button className="btn btn-sm btn-ghost" style={{ flex: 1 }} onClick={() => handleDelete(acc.key)}>删除</button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {showForm && (
+        <div className="overlay" onClick={() => setShowForm(false)}>
+          <div className="modal" style={{ width: 440, maxWidth: '100%' }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ margin: '0 0 12px' }}>{editing ? '编辑公众号账号' : '新增公众号账号'}</h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                账号 Key（英文标识，如 main / tech）
+                <input value={form.key} disabled={!!editing}
+                  onChange={(e) => setForm({ ...form, key: e.target.value.replace(/[^a-zA-Z0-9_-]/g, '') })}
+                  placeholder="main" style={inputStyle} />
+              </label>
+              <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                账号名称
+                <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  placeholder="我的主公众号" style={inputStyle} />
+              </label>
+              <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                AppID
+                <input value={form.app_id} onChange={(e) => setForm({ ...form, app_id: e.target.value })}
+                  placeholder="wx1234567890abcdef" style={inputStyle} />
+              </label>
+              <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                AppSecret{editing && <span style={{ color: 'var(--text-tertiary)' }}>（留空=不修改）</span>}
+                <input value={form.app_secret} type="password"
+                  onChange={(e) => setForm({ ...form, app_secret: e.target.value })}
+                  placeholder={editing ? '••••••（不修改留空）' : 'your_app_secret'} style={inputStyle} />
+              </label>
+              <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                作者名
+                <input value={form.author} onChange={(e) => setForm({ ...form, author: e.target.value })}
+                  placeholder="飞哥" style={inputStyle} />
+              </label>
+              <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                排版主题
+                <select value={form.theme} onChange={(e) => setForm({ ...form, theme: e.target.value })} style={inputStyle}>
+                  {['refined-blue', 'minimal-mono', 'warm-handdrawn', 'infographic-warm', 'infographic-blue', 'marker-lime', 'hand-drawn-blue'].map((t) => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
+              </label>
+              <label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <input type="checkbox" checked={form.set_default}
+                  onChange={(e) => setForm({ ...form, set_default: e.target.checked })} />
+                设为默认账号
+              </label>
+              {msg && <div style={{ color: 'var(--red)', fontSize: 12 }}>{msg}</div>}
+              <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                <button className="btn btn-primary" style={{ flex: 1 }} disabled={saving} onClick={handleSave}>
+                  {saving ? '保存中…' : '保存'}
+                </button>
+                <button className="btn" onClick={() => setShowForm(false)}>取消</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+const inputStyle: React.CSSProperties = {
+  display: 'block', width: '100%', boxSizing: 'border-box', marginTop: 4,
+  padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6,
+  fontSize: 13, background: 'var(--surface)',
+};
+
+
+// ============================================================
+// Wechatsync 在线配置组件
+// ============================================================
+
+function WechatsyncSection() {
+  const [status, setStatus] = useState<WechatsyncStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [cliBusy, setCliBusy] = useState(false);
+  const [tokenInput, setTokenInput] = useState('');
+  const [tokenSaving, setTokenSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  const load = useCallback(() => {
+    setLoading(true);
+    checkWechatsync()
+      .then((s) => { setStatus(s); setLoading(false); })
+      .catch(() => { setStatus(null); setLoading(false); });
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleInstallCli = async () => {
+    setCliBusy(true); setMsg('');
+    try {
+      const r = await installWechatsyncCli('install');
+      if (r.ok) {
+        setMsg('✓ @wechatsync/cli 安装成功');
+        load();
+      } else {
+        setMsg(`✗ 安装失败：${r.stderr || r.stdout || '未知错误'}`);
+      }
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : '安装失败');
+    } finally {
+      setCliBusy(false);
+    }
+  };
+
+  const handleSaveToken = async () => {
+    if (!tokenInput.trim()) { setMsg('Token 不能为空'); return; }
+    setTokenSaving(true); setMsg('');
+    try {
+      await saveWechatsyncToken(tokenInput.trim());
+      setTokenInput('');
+      setMsg('✓ Token 保存成功');
+      load();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : '保存失败');
+    } finally {
+      setTokenSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <h2 style={{ fontSize: 15, fontWeight: 600, margin: '24px 0 10px', color: 'var(--text)' }}>
+        Wechatsync 多平台同步
+      </h2>
+      <div className="card" style={{ padding: 16, fontSize: 13, lineHeight: 1.6 }}>
+        <p style={{ margin: '0 0 10px', color: 'var(--text-secondary)' }}>
+          通过 Wechatsync Chrome 扩展同步图文到头条、掘金、CSDN 等 13 个平台（均存为草稿）。
+          需要三步：安装 CLI → 配置 Token → Chrome 扩展登录各平台。
+        </p>
+
+        {/* 支持平台标签 */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '10px 0' }}>
+          {['头条', '掘金', 'CSDN', '简书', 'SegmentFault', '开源中国', '博客园', '51CTO', 'InfoQ', '微博', '豆瓣', '百家号', '搜狐号'].map((p) => (
+            <span key={p} className="badge" style={{ fontSize: 11 }}>{p}</span>
+          ))}
+        </div>
+
+        {loading && <div style={{ color: 'var(--text-tertiary)' }}>检查中…</div>}
+
+        {status && (
+          <div style={{ marginTop: 12 }}>
+            {/* 步骤 1：CLI 安装 */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+              <span style={{ fontSize: 16 }}>{status.cli_installed ? '✅' : '⬜'}</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>步骤 1：安装 @wechatsync/cli</div>
+                <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                  {status.cli_installed
+                    ? `已安装：${status.cli_path}${status.cli_version ? ` (${status.cli_version})` : ''}`
+                    : '未安装 — 点击右侧按钮一键安装'}
+                </div>
+              </div>
+              {!status.cli_installed && (
+                <button className="btn btn-sm btn-primary" disabled={cliBusy} onClick={handleInstallCli}>
+                  {cliBusy ? '安装中…' : '一键安装'}
+                </button>
+              )}
+            </div>
+
+            {/* 步骤 2：Token 配置 */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+              <span style={{ fontSize: 16 }}>{status.token_configured ? '✅' : '⬜'}</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>步骤 2：配置 MCP Token</div>
+                <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                  {status.token_configured
+                    ? `已配置：${status.token_masked}`
+                    : '未配置 — 在 Chrome 扩展设置里生成 Token 后填入下方'}
+                </div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, padding: '4px 0 10px' }}>
+              <input
+                value={tokenInput}
+                onChange={(e) => setTokenInput(e.target.value)}
+                placeholder="粘贴 Wechatsync MCP Token"
+                style={{ flex: 1, padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12 }}
+              />
+              <button className="btn btn-sm btn-primary" disabled={tokenSaving || !tokenInput.trim()} onClick={handleSaveToken}>
+                {tokenSaving ? '保存中…' : '保存 Token'}
+              </button>
+            </div>
+
+            {/* 步骤 3：Chrome 扩展 */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 0' }}>
+              <span style={{ fontSize: 16 }}>⬜</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>步骤 3：Chrome 扩展登录各平台</div>
+                <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                  安装 <a href="https://github.com/wechatsync/Wechatsync" target="_blank" rel="noreferrer" style={{ color: 'var(--accent-start)' }}>Wechatsync Chrome 扩展</a>，
+                  在浏览器里登录头条/掘金/CSDN 等目标平台。扩展会自动复用登录态。
+                </div>
+              </div>
+            </div>
+
+            {/* 整体状态 */}
+            <div style={{ marginTop: 10, padding: '10px 12px', borderRadius: 6,
+              background: status.ready ? 'rgba(34,197,94,0.08)' : 'rgba(245,158,11,0.08)',
+              fontSize: 12,
+              color: status.ready ? 'var(--green)' : 'var(--text-secondary)' }}>
+              {status.ready
+                ? '✓ Wechatsync 环境就绪！可在对话页说「同步到头条、掘金」来使用。'
+                : '⚠ 尚未就绪 — 完成上述步骤后即可使用多平台同步。'}
+            </div>
+          </div>
+        )}
+
+        {msg && <div style={{ marginTop: 10, fontSize: 12, color: msg.startsWith('✓') ? 'var(--green)' : 'var(--red)' }}>{msg}</div>}
+      </div>
+    </>
   );
 }
