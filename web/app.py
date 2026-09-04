@@ -1,4 +1,4 @@
-"""Easel Web — FastAPI 后端（含 SSE 流式输出）."""
+"""ElephBrain AI Web — FastAPI 后端（含 SSE 流式输出）."""
 from __future__ import annotations
 
 import asyncio
@@ -16,6 +16,7 @@ import time
 import urllib.request
 import uuid
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,11 +36,13 @@ from easel.timeouts import TIMEOUT_CHAT, TIMEOUT_DIRECT, TIMEOUT_PRODUCE
 
 PROFILES_DIR = PROJECT_ROOT / "profiles"
 SKILLS_DIR = PROJECT_ROOT / "skills"
-OUTPUTS_DIR = PROJECT_ROOT / "outputs"
-
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 REACT_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
 OPENCLAW_PROFILE = "easel"
+# 产物目录：agent 写入 workspace outputs，系统状态目录在项目 outputs
+OPENCLAW_WORKSPACE_DIR = Path.home() / f".openclaw-{OPENCLAW_PROFILE}" / "workspace"
+OUTPUTS_DIR = OPENCLAW_WORKSPACE_DIR / "outputs"
+LOCAL_OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 OPENCLAW_WORKSPACE = Path.home() / ".openclaw" / f"workspace-{OPENCLAW_PROFILE}"
 # OpenClaw 会话历史（transcript）目录：<profile 配置目录>/agents/main/sessions/<session-id>.jsonl
 OPENCLAW_SESSIONS_DIR = Path.home() / f".openclaw-{OPENCLAW_PROFILE}" / "agents" / "main" / "sessions"
@@ -76,11 +79,11 @@ if str(SHARED_SCRIPTS) not in sys.path:
 from model_registry import model_group
 
 BROWSER_PROFILES = Path.home() / ".easel-browser-profiles"
-LOGIN_DIR = OUTPUTS_DIR / "_login"
-PUBLISH_DIR = OUTPUTS_DIR / "_publish"   # 异步发布的状态/验证码文件（抖音发布可能触发短信墙）
-PROFILE_BUILD_DIR = OUTPUTS_DIR / "_profile_build"   # 异步画像构建的状态文件（避免长请求被代理超时）
-DEBUG_DIR = OUTPUTS_DIR / "_debug"   # 诊断日志（对话流收尾情况等），_ 前缀不进内容库
-SESSIONS_DIR = OUTPUTS_DIR / "_sessions"   # 每会话最近一轮的完整结果，供 SSE 连接中断后前端取回
+LOGIN_DIR = LOCAL_OUTPUTS_DIR / "_login"
+PUBLISH_DIR = LOCAL_OUTPUTS_DIR / "_publish"   # 异步发布的状态/验证码文件（抖音发布可能触发短信墙）
+PROFILE_BUILD_DIR = LOCAL_OUTPUTS_DIR / "_profile_build"   # 异步画像构建的状态文件（避免长请求被代理超时）
+DEBUG_DIR = LOCAL_OUTPUTS_DIR / "_debug"   # 诊断日志（对话流收尾情况等），_ 前缀不进内容库
+SESSIONS_DIR = LOCAL_OUTPUTS_DIR / "_sessions"   # 每会话最近一轮的完整结果，供 SSE 连接中断后前端取回
 # 非 _ 前缀的历史系统目录（归因层数据），内容库不展示（真产物一律在项目目录内）
 SYSTEM_TOPLEVEL_DIRS = {"analytics"}
 LOGIN_TIMEOUT = 240
@@ -182,7 +185,7 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 VIDEO_EXTS = {".mp4", ".mov", ".webm", ".m4v"}
 AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
 
-app = FastAPI(title="Easel", docs_url=None, redoc_url=None)
+app = FastAPI(title="ElephBrain AI", docs_url=None, redoc_url=None)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
@@ -293,8 +296,16 @@ def clean_agent_output(raw: str) -> str:
 
 
 def _proxy_env() -> dict[str, str]:
-    """返回带外网代理的环境变量（保护内网直连）。"""
+    """返回带外网代理的环境变量（保护内网直连）。
+
+    同时把项目根 .env 里的变量注入子进程环境——openclaw agent 和 skill 脚本
+    依赖 IMG_API_KEY / DASHSCOPE_API_KEY / VOICE_PROVIDER 等才能调用 ai-image-gen、
+    tts-voiceover、ai-music，不注入会导致 agent 误判"无 API key"而降级。
+    """
     env = os.environ.copy()
+    # 注入 .env 变量（不覆盖已有环境变量，让用户能临时覆盖）
+    for k, v in _read_env().items():
+        env.setdefault(k, v)
     env.setdefault('EASEL_ROOT', str(PROJECT_ROOT))
     env.setdefault('http_proxy', os.environ.get('EASEL_PROXY', ''))
     env.setdefault('https_proxy', os.environ.get('EASEL_PROXY', ''))
@@ -404,7 +415,7 @@ def _write_env(updates: dict[str, str]) -> None:
     if appended:
         if out and out[-1].strip() != '':
             out.append('')
-        out.append('# ---- Easel API keys (added via Web) ----')
+        out.append('# ---- ElephBrain AI API keys (added via Web) ----')
         out.extend(appended)
     tmp = ENV_FILE.with_suffix('.env.tmp')
     tmp.write_text('\n'.join(out) + '\n', encoding='utf-8')
@@ -438,13 +449,14 @@ def _api_spec_status(skill: str, env: dict[str, str]) -> dict:
     }
 
 
-def run_agent_sync(msg: str, timeout: int = TIMEOUT_DIRECT, session_id: str | None = None) -> str:
+def run_agent_sync(msg: str, timeout: int = TIMEOUT_DIRECT, session_id: str | None = None,
+                   thinking_level: str = THINKING_LEVEL) -> str:
     sk = session_id or f'web-{int(time.time() * 1000)}'
     _heal_openclaw_session(sk)   # 清洗历史里无签名 thinking 块，防回放失效
     # 钉死 --session-id 让 OpenClaw 每轮续同一 transcript（防跨天空闲后新起空会话丢历史，见 _openclaw_session_id）
     cmd = ['openclaw', '--profile', OPENCLAW_PROFILE, 'agent', '--local', '--agent', 'main',
            '--session-key', f'agent:main:{sk}', '--session-id', _openclaw_session_id(sk),
-           '--thinking', THINKING_LEVEL,
+           '--thinking', thinking_level,
            '--timeout', str(timeout), '--message', msg]
     # 跨进程锁：同一会话同时刻只跑一个 openclaw，防并发 takeover 崩溃（rc=1）
     xlock = _CrossProcLock(sk)
@@ -553,18 +565,23 @@ def get_output_tree() -> list[dict]:
         return []
     items = []
     for e in sorted(OUTPUTS_DIR.iterdir()):
-        # 内容库只展示「项目目录」：跳过系统目录(_login/_publish/...)、隐藏项、
-        # 以及根目录散文件（按新规约产物必在项目目录内，根散文件=系统状态/残渣）。
+        # 跳过隐藏文件和系统目录
         if e.name.startswith('.') or e.name.startswith('_'):
             continue
-        if not e.is_dir() or e.name in SYSTEM_TOPLEVEL_DIRS:
-            continue
-        node = _build_output_node(e, e.name)
-        meta = _read_project_meta(e)
-        if meta:
-            node['meta'] = meta
-        items.append(node)
-    # 按最后修改时间倒序：最近产物排最前（供工作台「最近产物」与内容库时间排序）
+        if e.is_dir():
+            if e.name in SYSTEM_TOPLEVEL_DIRS:
+                continue
+            node = _build_output_node(e, e.name)
+            meta = _read_project_meta(e)
+            if meta:
+                node['meta'] = meta
+            items.append(node)
+        else:
+            # 散文件也展示（workspace 模式下产物直接在 outputs/ 根目录）
+            node = _file_meta(e, e.name)
+            node['type'] = 'file'
+            items.append(node)
+    # 按最后修改时间倒序：最近产物排最前
     return sorted(items, key=lambda x: x.get('mtime', 0), reverse=True)
 
 
@@ -750,6 +767,7 @@ class ChatRequest(BaseModel):
     persona: str | None = None
     sessionId: str | None = None
     turnId: str | None = None
+    thinking: Literal["off", "high"] | None = None
     attachments: list[AttachmentRef] = Field(default_factory=list)
 
 
@@ -1073,7 +1091,7 @@ async def api_chat_stream(req: ChatRequest):
         cmd = [
             "openclaw", "--profile", OPENCLAW_PROFILE, "agent", "--local", "--agent", "main",
             "--session-key", f"agent:main:{sk}", "--session-id", _openclaw_session_id(sk),
-            "--thinking", THINKING_LEVEL,
+            "--thinking", req.thinking or THINKING_LEVEL,
             "--timeout", str(TIMEOUT_CHAT), "--message", message,
         ]
         env = _proxy_env()
@@ -1447,7 +1465,8 @@ async def api_chat(req: ChatRequest):
     message = _chat_message(req)
     loop = asyncio.get_event_loop()
     # chat 可能中途触发制作层长任务 → 用 TIMEOUT_CHAT，与流式 /api/chat/stream 一致（勿用 300s）
-    result = await loop.run_in_executor(None, run_agent_sync, message, TIMEOUT_CHAT, req.sessionId)
+    result = await loop.run_in_executor(None, run_agent_sync, message, TIMEOUT_CHAT, req.sessionId,
+                                        req.thinking or THINKING_LEVEL)
     return {"response": result}
 
 
@@ -2241,7 +2260,7 @@ _TREND_CACHE: dict[str, tuple[float, list]] = {}
 
 
 def _http_get_json(url: str, timeout: int = 8):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 Easel"})
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 ElephBrain"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8", "replace"))
 
@@ -2496,7 +2515,7 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("EASEL_PORT", "7860"))
     proxy_url = os.environ.get("VSCODE_PROXY_URI", "").replace("{{port}}", str(port))
-    print("\n  ✦ Easel Web")
+    print("\n  ✦ ElephBrain AI")
     print(f"  http://localhost:{port}")
     if proxy_url:
         print(f"  {proxy_url}")
