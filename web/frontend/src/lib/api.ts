@@ -434,15 +434,13 @@ export interface WechatsyncExtensionStatus {
   zip_exists: boolean;
   unzipped: boolean;
   extension_dir: string;
-  chrome_found: boolean;
-  chrome_path: string;
 }
 
 export function checkWechatsyncExtension(): Promise<WechatsyncExtensionStatus> {
   return request<WechatsyncExtensionStatus>('/api/wechatsync/extension');
 }
 
-export function extensionAction(action: 'unzip' | 'launch' | 'download'): Promise<{
+export function extensionAction(action: 'unzip' | 'download'): Promise<{
   ok: boolean; message: string;
 }> {
   return request('/api/wechatsync/extension', {

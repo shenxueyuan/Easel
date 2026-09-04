@@ -674,7 +674,7 @@ function WechatsyncSection() {
     }
   };
 
-  const handleExtAction = async (action: 'unzip' | 'launch' | 'download') => {
+  const handleExtAction = async (action: 'unzip' | 'download') => {
     setExtBusy(action); setMsg('');
     try {
       const r = await extensionAction(action);
@@ -728,62 +728,47 @@ function WechatsyncSection() {
 
         {status && (
           <div style={{ marginTop: 12 }}>
-            {/* 步骤 1：安装 Chrome 扩展（一键解压 + 启动 Chrome 加载） */}
+            {/* 步骤 1：下载扩展 + 手动加载到 Chrome */}
             <div style={{ padding: '12px 0', borderBottom: '1px solid var(--border)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span style={{ fontSize: 16 }}>{extStatus?.unzipped ? '✅' : '🧩'}</span>
+                <span style={{ fontSize: 16 }}>🧩</span>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 600, fontSize: 13 }}>
                     步骤 1：安装 Chrome 扩展
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
-                    {extStatus?.unzipped
-                      ? '扩展已解压就绪 — 点击「启动 Chrome 加载」'
-                      : '项目已预置扩展包，一键解压后启动 Chrome 自动加载'}
+                    下载扩展文件，在 Chrome 开发者模式下加载
                   </div>
                 </div>
               </div>
-              <div style={{ marginTop: 8, padding: '10px 12px', background: 'var(--surface)', borderRadius: 6, fontSize: 12, lineHeight: 1.7 }}>
+              <div style={{ marginTop: 8, padding: '10px 12px', background: 'var(--surface)', borderRadius: 6, fontSize: 12, lineHeight: 1.8 }}>
+                <div style={{ fontWeight: 600, marginBottom: 4, color: 'var(--text)' }}>操作步骤：</div>
                 <div style={{ color: 'var(--text-secondary)' }}>
-                  扩展包已预置在项目 <code>assets/extensions/</code> 目录，无需去应用商店下载。<br />
-                  ① 点击「解压扩展」解压到本地<br />
-                  ② 点击「启动 Chrome」自动加载扩展<br />
-                  ③ Chrome 打开后右上角出现 Wechatsync 图标即安装成功
+                  ① 点击「下载扩展文件」下载 zip 包<br />
+                  ② 解压 zip 到本地任意目录<br />
+                  ③ 打开 Chrome，地址栏输入 <code>chrome://extensions</code><br />
+                  ④ 右上角开启「开发者模式」<br />
+                  ⑤ 点击「加载已解压的扩展程序」，选择解压后的文件夹<br />
+                  ⑥ 安装成功，浏览器右上角出现 Wechatsync 图标 ✅
                 </div>
-                {extStatus && !extStatus.chrome_found && (
-                  <div style={{ marginTop: 6, color: 'var(--red)', fontSize: 11 }}>
-                    ⚠ 未检测到 Chrome 浏览器，请先安装 Chrome 或 Edge。
-                    也可手动从{' '}
-                    <a href="https://chrome.google.com/webstore/detail/hchobocdmclopcbnibdnoafilagadion" target="_blank" rel="noreferrer" style={{ color: 'var(--accent-start)' }}>
-                      Chrome 应用商店
-                    </a>{' '}
-                    安装。
-                  </div>
-                )}
               </div>
               <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-                {extStatus && !extStatus.unzipped && (
+                {extStatus?.zip_exists ? (
+                  <a className="btn btn-sm btn-primary"
+                    href={`${window.location.origin}/api/media/assets/extensions/wechatsync-2.0.9.zip`}
+                    download="wechatsync-2.0.9.zip">
+                    下载扩展文件
+                  </a>
+                ) : (
                   <button className="btn btn-sm btn-primary" disabled={!!extBusy}
-                    onClick={() => handleExtAction('unzip')}>
-                    {extBusy === 'unzip' ? '解压中…' : '解压扩展'}
-                  </button>
-                )}
-                {extStatus?.unzipped && (
-                  <button className="btn btn-sm btn-primary" disabled={!!extBusy || !extStatus.chrome_found}
-                    onClick={() => handleExtAction('launch')}>
-                    {extBusy === 'launch' ? '启动中…' : '启动 Chrome 加载'}
-                  </button>
-                )}
-                {extStatus && !extStatus.zip_exists && (
-                  <button className="btn btn-sm" disabled={!!extBusy}
                     onClick={() => handleExtAction('download')}>
-                    {extBusy === 'download' ? '下载中…' : '下载扩展包'}
+                    {extBusy === 'download' ? '下载中…' : '下载扩展包到项目'}
                   </button>
                 )}
                 <a href="https://chrome.google.com/webstore/detail/hchobocdmclopcbnibdnoafilagadion"
                   target="_blank" rel="noreferrer"
                   style={{ fontSize: 11, color: 'var(--accent-start)', alignSelf: 'center' }}>
-                  或从应用商店安装 →
+                  或从 Chrome 应用商店安装 →
                 </a>
               </div>
             </div>

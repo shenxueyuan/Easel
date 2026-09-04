@@ -2073,27 +2073,20 @@ def _find_chrome() -> str | None:
 
 @app.get("/api/wechatsync/extension")
 async def api_wechatsync_extension_status():
-    """检查 Chrome 扩展状态：zip 是否存在、是否已解压、Chrome 是否可用。"""
+    """检查 Chrome 扩展状态：zip 是否存在、是否已解压。"""
     return {
         'zip_exists': EXTENSION_ZIP.is_file(),
         'unzipped': EXTENSION_MANIFEST.is_file(),
         'extension_dir': str(EXTENSION_DIR) if EXTENSION_MANIFEST.is_file() else '',
-        'chrome_found': bool(_find_chrome()),
-        'chrome_path': _find_chrome() or '',
     }
-
-
-class ExtensionInstallRequest(BaseModel):
-    action: str = 'unzip'   # unzip | launch | download
 
 
 @app.post("/api/wechatsync/extension")
 async def api_wechatsync_extension_action(req: ExtensionInstallRequest):
-    """解压扩展 / 启动 Chrome 加载扩展 / 重新下载。"""
+    """解压扩展 / 重新下载。"""
     import zipfile
 
     if req.action == 'download':
-        # 重新下载扩展 zip
         import urllib.request
         url = 'https://wpics.oss-cn-shanghai.aliyuncs.com/wechatsync-2.0.9.zip?date=20260324'
         try:
@@ -2114,26 +2107,7 @@ async def api_wechatsync_extension_action(req: ExtensionInstallRequest):
         except Exception as e:
             return {'ok': False, 'message': f'解压失败：{e}'}
 
-    if req.action == 'launch':
-        if not EXTENSION_MANIFEST.is_file():
-            return {'ok': False, 'message': '扩展未解压，请先解压'}
-        chrome = _find_chrome()
-        if not chrome:
-            return {'ok': False, 'message': '未找到 Chrome 浏览器，请先安装 Chrome'}
-        try:
-            # 启动 Chrome 并加载扩展（开发者模式）
-            subprocess.Popen(
-                [chrome, '--load-extension=' + str(EXTENSION_DIR),
-                 '--enable-extensions', 'chrome://extensions/'],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            return {'ok': True,
-                    'message': 'Chrome 已启动并加载 Wechatsync 扩展。'
-                               '如果扩展未自动加载，请在 chrome://extensions 页面手动开启「开发者模式」并点击「加载已解压的扩展程序」。'}
-        except Exception as e:
-            return {'ok': False, 'message': f'启动 Chrome 失败：{e}'}
-
-    raise HTTPException(400, 'action 必须是 unzip | launch | download')
+    raise HTTPException(400, 'action 必须是 unzip | download')
     token: str
 
 
