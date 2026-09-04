@@ -675,8 +675,8 @@ function WechatsyncSection() {
       </h2>
       <div className="card" style={{ padding: 16, fontSize: 13, lineHeight: 1.6 }}>
         <p style={{ margin: '0 0 10px', color: 'var(--text-secondary)' }}>
-          通过 Wechatsync Chrome 扩展同步图文到头条、掘金、CSDN 等 13 个平台（均存为草稿）。
-          需要三步：安装 CLI → 配置 Token → Chrome 扩展登录各平台。
+          通过 Wechatsync 同步图文到头条、掘金、CSDN 等 13 个平台（均存为草稿）。
+          按以下 3 步操作，完成后即可在对话页说「同步到头条」来使用。
         </p>
 
         {/* 支持平台标签 */}
@@ -690,58 +690,101 @@ function WechatsyncSection() {
 
         {status && (
           <div style={{ marginTop: 12 }}>
-            {/* 步骤 1：CLI 安装 */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
-              <span style={{ fontSize: 16 }}>{status.cli_installed ? '✅' : '⬜'}</span>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 600, fontSize: 13 }}>步骤 1：安装 @wechatsync/cli</div>
-                <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-                  {status.cli_installed
-                    ? `已安装：${status.cli_path}${status.cli_version ? ` (${status.cli_version})` : ''}`
-                    : '未安装 — 点击右侧按钮一键安装'}
+            {/* 步骤 1：安装 Chrome 扩展（必须先做这步） */}
+            <div style={{ padding: '12px 0', borderBottom: '1px solid var(--border)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 16 }}>🧩</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>
+                    步骤 1：安装 Chrome 扩展（必须先做）
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
+                    这是浏览器插件，装后浏览器右上角能看到图标。CLI 不是浏览器插件。
+                  </div>
                 </div>
+              </div>
+              <div style={{ marginTop: 8, padding: '10px 12px', background: 'var(--surface)', borderRadius: 6, fontSize: 12, lineHeight: 1.7 }}>
+                <div style={{ fontWeight: 600, marginBottom: 4, color: 'var(--text)' }}>操作方法：</div>
+                <div style={{ color: 'var(--text-secondary)' }}>
+                  ① 打开 Chrome 浏览器<br />
+                  ② 访问{' '}
+                  <a href="https://chrome.google.com/webstore/detail/wechatsync" target="_blank" rel="noreferrer" style={{ color: 'var(--accent-start)' }}>
+                    Chrome 应用商店搜索 Wechatsync
+                  </a>{' '}
+                  或{' '}
+                  <a href="https://github.com/wechatsync/Wechatsync" target="_blank" rel="noreferrer" style={{ color: 'var(--accent-start)' }}>
+                    GitHub 下载
+                  </a><br />
+                  ③ 点击「添加到 Chrome」<br />
+                  ④ 安装后浏览器右上角出现 Wechatsync 图标 ✅
+                </div>
+              </div>
+            </div>
+
+            {/* 步骤 2：在扩展里登录平台 + 获取 Token */}
+            <div style={{ padding: '12px 0', borderBottom: '1px solid var(--border)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 16 }}>{status.token_configured ? '✅' : '⬜'}</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>
+                    步骤 2：登录平台 + 获取 MCP Token
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
+                    {status.token_configured
+                      ? `已配置：${status.token_masked}`
+                      : 'Token 从 Chrome 扩展里生成，不是自己编的'}
+                  </div>
+                </div>
+              </div>
+              <div style={{ marginTop: 8, padding: '10px 12px', background: 'var(--surface)', borderRadius: 6, fontSize: 12, lineHeight: 1.7 }}>
+                <div style={{ fontWeight: 600, marginBottom: 4, color: 'var(--text)' }}>操作方法：</div>
+                <div style={{ color: 'var(--text-secondary)' }}>
+                  ① 点击浏览器右上角 Wechatsync 图标<br />
+                  ② 在扩展里登录你要同步的平台（头条/掘金/CSDN 等）<br />
+                  ③ 进入扩展「设置」→ 找到「MCP 连接」→ 开启<br />
+                  ④ 点击「生成 Token」，复制这串字符<br />
+                  ⑤ 粘贴到下方输入框，点「保存 Token」
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, padding: '8px 0 0' }}>
+                <input
+                  value={tokenInput}
+                  onChange={(e) => setTokenInput(e.target.value)}
+                  placeholder="粘贴从 Chrome 扩展复制的 MCP Token"
+                  style={{ flex: 1, padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12 }}
+                />
+                <button className="btn btn-sm btn-primary" disabled={tokenSaving || !tokenInput.trim()} onClick={handleSaveToken}>
+                  {tokenSaving ? '保存中…' : '保存 Token'}
+                </button>
+              </div>
+            </div>
+
+            {/* 步骤 3：安装 CLI（后端命令行工具） */}
+            <div style={{ padding: '12px 0' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 16 }}>{status.cli_installed ? '✅' : '⬜'}</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>
+                    步骤 3：安装命令行工具 CLI
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
+                    {status.cli_installed
+                      ? `已安装：${status.cli_path}${status.cli_version ? ` (${status.cli_version})` : ''}`
+                      : '这是后端执行同步用的命令行工具，不是浏览器插件'}
+                  </div>
+                </div>
+                {!status.cli_installed && (
+                  <button className="btn btn-sm btn-primary" disabled={cliBusy} onClick={handleInstallCli}>
+                    {cliBusy ? '安装中…' : '一键安装'}
+                  </button>
+                )}
               </div>
               {!status.cli_installed && (
-                <button className="btn btn-sm btn-primary" disabled={cliBusy} onClick={handleInstallCli}>
-                  {cliBusy ? '安装中…' : '一键安装'}
-                </button>
+                <div style={{ marginTop: 8, padding: '10px 12px', background: 'var(--surface)', borderRadius: 6, fontSize: 12, lineHeight: 1.7, color: 'var(--text-secondary)' }}>
+                  点击「一键安装」即可，后端自动执行 <code>npm install -g @wechatsync/cli</code>。
+                  安装后此步骤显示 ✅。
+                </div>
               )}
-            </div>
-
-            {/* 步骤 2：Token 配置 */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
-              <span style={{ fontSize: 16 }}>{status.token_configured ? '✅' : '⬜'}</span>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 600, fontSize: 13 }}>步骤 2：配置 MCP Token</div>
-                <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-                  {status.token_configured
-                    ? `已配置：${status.token_masked}`
-                    : '未配置 — 在 Chrome 扩展设置里生成 Token 后填入下方'}
-                </div>
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: 8, padding: '4px 0 10px' }}>
-              <input
-                value={tokenInput}
-                onChange={(e) => setTokenInput(e.target.value)}
-                placeholder="粘贴 Wechatsync MCP Token"
-                style={{ flex: 1, padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12 }}
-              />
-              <button className="btn btn-sm btn-primary" disabled={tokenSaving || !tokenInput.trim()} onClick={handleSaveToken}>
-                {tokenSaving ? '保存中…' : '保存 Token'}
-              </button>
-            </div>
-
-            {/* 步骤 3：Chrome 扩展 */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 0' }}>
-              <span style={{ fontSize: 16 }}>⬜</span>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 600, fontSize: 13 }}>步骤 3：Chrome 扩展登录各平台</div>
-                <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-                  安装 <a href="https://github.com/wechatsync/Wechatsync" target="_blank" rel="noreferrer" style={{ color: 'var(--accent-start)' }}>Wechatsync Chrome 扩展</a>，
-                  在浏览器里登录头条/掘金/CSDN 等目标平台。扩展会自动复用登录态。
-                </div>
-              </div>
             </div>
 
             {/* 整体状态 */}
@@ -751,7 +794,7 @@ function WechatsyncSection() {
               color: status.ready ? 'var(--green)' : 'var(--text-secondary)' }}>
               {status.ready
                 ? '✓ Wechatsync 环境就绪！可在对话页说「同步到头条、掘金」来使用。'
-                : '⚠ 尚未就绪 — 完成上述步骤后即可使用多平台同步。'}
+                : '⚠ 尚未就绪 — 按顺序完成上述 3 步后即可使用。'}
             </div>
           </div>
         )}
