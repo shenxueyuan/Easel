@@ -48,7 +48,7 @@ from model_registry import env_aliases, provider_ids, provider_required_env
 
 UA = "Easel-ai-video/0.1"
 
-DEFAULT_DASHSCOPE_BASE = "https://dashscope.aliyuncs.com/api/v1"
+DEFAULT_DASHSCOPE_BASE = "https://dashscope.aliyuncs.com"
 DEFAULT_DASHSCOPE_MODEL = "wan2.7-t2v"
 DEFAULT_ARK_BASE = "https://ark.cn-beijing.volces.com/api/v3"
 DEFAULT_ARK_MODEL = "doubao-seedance-1-0-lite-t2v"
@@ -59,6 +59,10 @@ DEFAULT_XHS_MAAS_VIDEO_BASE = "https://maas.devops.xiaohongshu.com/openai/openai
 DEFAULT_AGNES_BASE = "https://apihub.agnes-ai.com/v1"
 DEFAULT_AGNES_POLL_BASE = "https://apihub.agnes-ai.com/agnesapi"
 DEFAULT_AGNES_MODEL = "agnes-video-2.5-flash"
+# 硅基流动 SiliconFlow（Wan2.2 I2V/T2V，/video/submit + /video/status 异步）
+DEFAULT_SILICONFLOW_BASE = "https://api.siliconflow.cn/v1"
+DEFAULT_SILICONFLOW_I2V_MODEL = "Wan-AI/Wan2.2-I2V-A14B"
+DEFAULT_SILICONFLOW_T2V_MODEL = "Wan-AI/Wan2.2-T2V-A14B"
 
 # 内网/OSS 直连 opener（绕过环境代理）——外网代理常挡内网 MaaS 与 aliyuncs OSS
 _NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -147,6 +151,7 @@ PROVIDER_CAPABILITIES: dict[str, dict[str, Any]] = {
             "audio_field": "generate_audio", "audio_location": "root"},
     "kling": {"native_audio": False, "dialogue": False, "dialogue_faithful": False, "audio_reference": False},
     "openai-compatible": {"native_audio": False, "dialogue": False, "dialogue_faithful": False, "audio_reference": False},
+    "siliconflow": {"native_audio": False, "dialogue": False, "dialogue_faithful": False, "audio_reference": False},
     "xhs-maas": {"native_audio": True, "dialogue": True, "dialogue_faithful": False, "audio_reference": False,
                  "audio_default": True},
     # agnes-video-2.5-flash：实测默认生成原生音频（prompt 描述声音，无开关字段）；reference 模式可传 audios。
@@ -285,6 +290,7 @@ def resolve_model(provider: str, explicit: str | None = None, *, image: bool = F
         "dashscope": ("DASHSCOPE_VIDEO_MODEL",),
         "ark": ("ARK_MODEL",),
         "openai-compatible": ("VIDEO_MODEL",),
+        "siliconflow": ("SILICONFLOW_VIDEO_MODEL",),
         "xhs-maas": (("XHS_MAAS_I2V_MODEL",) if image else ("XHS_MAAS_T2V_MODEL",)),
         "agnes": ("AGNES_MODEL",),
     }.get(provider, ())
@@ -296,6 +302,7 @@ def resolve_model(provider: str, explicit: str | None = None, *, image: bool = F
         "dashscope": DEFAULT_DASHSCOPE_MODEL,
         "ark": DEFAULT_ARK_MODEL,
         "openai-compatible": "sora-1",
+        "siliconflow": DEFAULT_SILICONFLOW_I2V_MODEL if image else DEFAULT_SILICONFLOW_T2V_MODEL,
         "xhs-maas": "happyhorse-1.0-i2v" if image else "happyhorse-1.0-t2v",
         "agnes": DEFAULT_AGNES_MODEL,
     }
@@ -390,13 +397,14 @@ def _poll(task_url: str, headers: dict[str, str], interval: int, timeout: int,
           status_path: tuple[str, ...] = ("output", "task_status"),
           done=("SUCCEEDED", "SUCCESS", "COMPLETED"),
           bad=("FAILED", "CANCELED", "ERROR", "UNKNOWN"),
-          payload: dict[str, Any] | None = None, direct: bool = False) -> dict[str, Any]:
+          payload: dict[str, Any] | None = None, direct: bool = False,
+          method: str = "GET") -> dict[str, Any]:
     start = time.time()
     while True:
         elapsed = time.time() - start
         if elapsed > timeout:
             fail(f"任务超时（{timeout}s），可稍后用 task_id 手动查询。")
-        result = http_request(task_url, headers, method="GET", payload=payload, direct=direct)
+        result = http_request(task_url, headers, method=method, payload=payload, direct=direct)
         node: Any = result
         for k in status_path:
             node = node.get(k, {}) if isinstance(node, dict) else {}
@@ -415,18 +423,29 @@ def generate_dashscope(args: argparse.Namespace, image: str | None) -> Path:
     base = (os.environ.get("DASHSCOPE_BASE_URL", "").strip() or DEFAULT_DASHSCOPE_BASE).rstrip("/")
     model = resolve_model("dashscope", args.model, image=image is not None)
     if image:
-        endpoint = f"{base}/services/aigc/image2video/video-synthesis"
-        input_block = {"img_url": _image_to_data_or_url(image), "prompt": args.prompt or ""}
-    else:
-        # wan2.7+ 使用新版 video-generation 端点；旧模型（wan2.1/2.2）用 text2video
+        # wan2.7+ I2V 用新版 video-generation 端点 + media 数组格式
         if model.startswith("wan2.7") or model.startswith("wan3.0"):
-            endpoint = f"{base}/services/aigc/video-generation/video-synthesis"
+            endpoint = f"{base}/api/v1/services/aigc/video-generation/video-synthesis"
+            input_block = {
+                "prompt": args.prompt or "",
+                "media": [{"type": "first_frame", "url": _image_to_data_or_url(image)}],
+            }
         else:
-            endpoint = f"{base}/services/aigc/text2video/video-synthesis"
+            # 旧模型（wan2.1/2.2/2.5/2.6）用 image2video 端点 + img_url 格式
+            endpoint = f"{base}/api/v1/services/aigc/image2video/video-synthesis"
+            input_block = {"img_url": _image_to_data_or_url(image), "prompt": args.prompt or ""}
+    else:
+        # T2V：wan2.7+ 用新版 video-generation 端点；旧模型用 text2video
+        if model.startswith("wan2.7") or model.startswith("wan3.0"):
+            endpoint = f"{base}/api/v1/services/aigc/video-generation/video-synthesis"
+        else:
+            endpoint = f"{base}/api/v1/services/aigc/text2video/video-synthesis"
         input_block = {"prompt": args.prompt}
     params: dict[str, Any] = {}
     if args.ratio:
-        params["size"] = args.ratio.replace(":", "*")
+        # wan2.7 用 "720*1280" 格式；ratio "9:16" → "720*1280"
+        ratio_to_size = {"9:16": "720*1280", "16:9": "1280*720", "1:1": "960*960"}
+        params["size"] = ratio_to_size.get(args.ratio, args.ratio.replace(":", "*"))
     if args.duration:
         params["duration"] = args.duration
     payload = {"model": model, "input": input_block, "parameters": params}
@@ -438,7 +457,7 @@ def generate_dashscope(args: argparse.Namespace, image: str | None) -> Path:
     if not task_id:
         fail(f"提交失败：{result.get('message', json.dumps(result)[:300])}")
     print(f"[dashscope] 任务已提交：{task_id}", file=sys.stderr)
-    task = _poll(f"{base}/tasks/{task_id}", {"Authorization": f"Bearer {api_key}"},
+    task = _poll(f"{base}/api/v1/tasks/{task_id}", {"Authorization": f"Bearer {api_key}"},
                  args.poll_interval, args.timeout)
     url = _find_video_url(task)
     if not url:
@@ -461,7 +480,7 @@ def generate_ark(args: argparse.Namespace, image: str | None) -> Path:
         payload["duration"] = args.duration
     _put_audio(payload, None, args, "ark", model)
     headers = {"Authorization": f"Bearer {api_key}"}
-    endpoint = f"{base}/contents/generations/tasks"
+    endpoint = f"{base}/api/v1/contents/generations/tasks"
     print(f"[ark] 提交任务 {endpoint}（model={model}）...", file=sys.stderr)
     result = http_request(endpoint, headers, method="POST", payload=payload)
     task_id = result.get("id") or (result.get("data") or {}).get("id")
@@ -556,6 +575,57 @@ def generate_openai_compatible(args: argparse.Namespace, image: str | None) -> P
     return download_video(url, Path(args.output))
 
 
+# ── provider: siliconflow（硅基流动 Wan2.2 I2V/T2V）──────────
+def generate_siliconflow(args: argparse.Namespace, image: str | None) -> Path:
+    """硅基流动 SiliconFlow：/video/submit 提交 + /video/status 轮询。
+
+    I2V 接受 base64 data URI（本地文件直接转），支持 720x1280 竖版。
+    API key 可复用 IMG_API_KEY（硅基流动同一个 key 通吃图/视频）。
+    """
+    api_key = require_env("SILICONFLOW_API_KEY")
+    base = (os.environ.get("SILICONFLOW_BASE_URL", "").strip()
+            or DEFAULT_SILICONFLOW_BASE).rstrip("/")
+    model = resolve_model("siliconflow", args.model, image=image is not None)
+    # 硅基流动用 image_size 字段，值必须是具体分辨率
+    ratio_map = {"9:16": "720x1280", "16:9": "1280x720", "1:1": "960x960"}
+    image_size = ratio_map.get(args.ratio or "", "720x1280")
+    payload: dict[str, Any] = {
+        "model": model,
+        "prompt": args.prompt or "",
+        "image_size": image_size,
+    }
+    if image:
+        payload["image"] = _image_to_data_or_url(image)
+    if getattr(args, "negative_prompt", None):
+        payload["negative_prompt"] = args.negative_prompt
+    if getattr(args, "seed", None) is not None:
+        payload["seed"] = args.seed
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    submit_url = f"{base}/video/submit"
+    status_url = f"{base}/video/status"
+    print(f"[siliconflow] 提交任务 {submit_url}（model={model}, size={image_size}, i2v={bool(image)}）...",
+          file=sys.stderr)
+    result = http_request(submit_url, headers, method="POST", payload=payload)
+    request_id = result.get("requestId")
+    if not request_id:
+        fail(f"提交失败：{json.dumps(result)[:300]}")
+    print(f"[siliconflow] requestId={request_id}，轮询中...", file=sys.stderr)
+    # 轮询：POST /video/status {"requestId": "..."}，状态值 Succeed/InQueue/InProgress/Failed
+    task = _poll(status_url, headers, args.poll_interval, args.timeout,
+                 status_path=("status",),
+                 done=("SUCCEED", "SUCCEEDED", "SUCCESS", "COMPLETED"),
+                 bad=("FAILED", "CANCELED", "ERROR", "UNKNOWN"),
+                 payload={"requestId": request_id}, method="POST")
+    # 视频URL在 results.videos[0].url（数组）
+    videos = task.get("results", {}).get("videos", [])
+    url = videos[0].get("url", "") if videos else ""
+    if not url:
+        url = _find_video_url(task)
+    if not url:
+        fail(f"任务完成但未找到视频 URL：{json.dumps(task)[:300]}")
+    return download_video(url, Path(args.output))
+
+
 # ── provider: xhs-maas（小红书内网 happyhorse 文/图生视频）─────
 def generate_xhs_maas(args: argparse.Namespace, image: str | None) -> Path:
     """小红书内网 MaaS：DashScope 风格异步，鉴权 api-key 头，全程直连（绕代理）。
@@ -583,14 +653,14 @@ def generate_xhs_maas(args: argparse.Namespace, image: str | None) -> Path:
     payload = {"model": model, "input": input_block, "parameters": params}
     _put_audio(payload, params, args, "xhs-maas", model)
     headers = {"api-key": api_key}
-    endpoint = f"{base}/services/aigc/video-generation/video-synthesis"
+    endpoint = f"{base}/api/v1/services/aigc/video-generation/video-synthesis"
     print(f"[xhs-maas] 提交任务 {endpoint}（model={model}）...", file=sys.stderr)
     result = http_request(endpoint, headers, method="POST", payload=payload, direct=True)
     task_id = (result.get("output") or {}).get("task_id")
     if not task_id:
         fail(f"提交失败：{result.get('message') or json.dumps(result, ensure_ascii=False)[:300]}")
     print(f"[xhs-maas] 任务已提交：{task_id}", file=sys.stderr)
-    task = _poll(f"{base}/tasks/{task_id}", headers, args.poll_interval, args.timeout,
+    task = _poll(f"{base}/api/v1/tasks/{task_id}", headers, args.poll_interval, args.timeout,
                  status_path=("output", "task_status"),
                  payload={"model": model}, direct=True)
     url = _find_video_url(task)
@@ -645,6 +715,7 @@ GENERATORS = {
     "ark": generate_ark,
     "kling": generate_kling,
     "openai-compatible": generate_openai_compatible,
+    "siliconflow": generate_siliconflow,
     "xhs-maas": generate_xhs_maas,
     "agnes": generate_agnes,
 }

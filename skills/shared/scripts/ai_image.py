@@ -171,10 +171,15 @@ def load_and_require() -> tuple[str, str, str, argparse.Namespace | None]:
 # ── 模式检测 / 尺寸 ──────────────────────────────────────────
 
 def detect_mode(base_url: str, explicit_mode: str | None) -> str:
-    if explicit_mode in ("sync", "async"):
+    if explicit_mode in ("sync", "async", "dashscope"):
         return explicit_mode
     if "apimart" in base_url.lower():
         return "async"
+    # 阿里百炼 dashscope 端点自动检测
+    if os.environ.get("IMG_PROVIDER", "").strip() == "dashscope":
+        return "dashscope"
+    if "maas.aliyuncs.com" in base_url.lower() and "dashscope" in os.environ.get("DASHSCOPE_API_KEY", "").lower():
+        return "dashscope"
     return "sync"
 
 
@@ -438,6 +443,101 @@ def _save_async_images(task_data: dict[str, Any], output: str, fmt: str) -> list
     return paths
 
 
+# ── dashscope 异步（阿里百炼万相文生图）──────────────────────
+
+def run_dashscope(base_url: str, api_key: str, payload: dict[str, Any],
+                  output: str, fmt: str, poll_interval: int, timeout: int) -> list[Path]:
+    """阿里百炼 dashscope 异步图像生成：提交 → 轮询 → 下载。
+
+    端点：{base}/api/v1/services/aigc/text2image/image-synthesis
+    模型：wanx2.1-t2i-turbo / wanx2.1-t2i-plus / wan2.2-t2i-flash / wan2.6-t2i
+    参数：size 用 "宽*高" 格式（如 768*1344），n 为张数，异步需 X-DashScope-Async: enable
+    """
+    base = base_url.rstrip("/")
+    endpoint = f"{base}/api/v1/services/aigc/text2image/image-synthesis"
+    model = payload.get("model", "wanx2.1-t2i-turbo")
+    prompt = payload.get("prompt", "")
+    size = payload.get("size", "1280*1280")
+    # 像素格式 "1024x1536" → "1024*1536"
+    size = size.replace("x", "*").replace("×", "*")
+    n = payload.get("n", 1)
+
+    ds_payload = {
+        "model": model,
+        "input": {"prompt": prompt},
+        "parameters": {"size": size, "n": n, "prompt_extend": False},
+    }
+    body = json.dumps(ds_payload).encode("utf-8")
+    request = urllib.request.Request(
+        endpoint, data=body,
+        headers={"Authorization": f"Bearer {api_key}",
+                 "Content-Type": "application/json",
+                 "X-DashScope-Async": "enable", "User-Agent": UA},
+        method="POST",
+    )
+    print(f"[dashscope] 提交图像生成任务到 {endpoint}（model={model}, size={size}）...", file=sys.stderr)
+    try:
+        with _open(request, timeout=30) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        fail(f"提交失败（HTTP {exc.code}）：{exc.read().decode()[:300]}")
+        return []
+    except urllib.error.URLError as exc:
+        fail(f"提交失败（网络错误）：{exc}")
+        return []
+
+    output_data = result.get("output", {})
+    task_id = output_data.get("task_id")
+    if not task_id:
+        code = result.get("code", "?")
+        message = result.get("message", json.dumps(result)[:300])
+        fail(f"提交失败：{message}（code={code}）")
+    task_status = output_data.get("task_status", "?")
+    print(f"[dashscope] 任务已提交: {task_id}（{task_status}），轮询中...", file=sys.stderr)
+
+    # 轮询 GET /api/v1/tasks/{task_id}
+    task_url = f"{base}/api/v1/tasks/{task_id}"
+    start = time.time()
+    while True:
+        elapsed = time.time() - start
+        if elapsed > timeout:
+            fail(f"任务 {task_id} 超时（{timeout}s），可稍后手动查询。")
+        poll_req = urllib.request.Request(
+            task_url, headers={"Authorization": f"Bearer {api_key}", "User-Agent": UA},
+            method="GET",
+        )
+        try:
+            with _open(poll_req, timeout=30) as response:
+                task_result = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            fail(f"轮询失败（HTTP {exc.code}）：{exc.read().decode()[:200]}")
+            return []
+        task_output = task_result.get("output", {})
+        status = task_output.get("task_status", "?")
+        if status == "SUCCEEDED":
+            break
+        if status in ("FAILED", "CANCELED", "ERROR", "UNKNOWN"):
+            fail(f"任务失败：{status} - {json.dumps(task_output)[:300]}")
+        print(f"  轮询中... 状态={status} 耗时={elapsed:.0f}s", file=sys.stderr)
+        time.sleep(poll_interval)
+
+    # 下载图片
+    results = task_output.get("results", [])
+    if not isinstance(results, list) or not results:
+        fail(f"任务完成但未找到图片：{json.dumps(task_output)[:300]}")
+    paths = _out_paths(output, len(results), fmt)
+    for index, item in enumerate(results):
+        image_url = item.get("url", "")
+        if not image_url:
+            fail(f"图片 {index} 缺少 url：{json.dumps(item)[:200]}")
+        suffix = _suffix_from_url(image_url, fmt)
+        target = paths[index].with_suffix(f".{suffix}")
+        paths[index] = target
+        print(f"  下载图片: {image_url[:80]}...", file=sys.stderr)
+        _download_to(image_url, target)
+    return paths
+
+
 # ── 子命令：text2img ──────────────────────────────────────
 
 def cmd_text2img(args: argparse.Namespace) -> None:
@@ -448,7 +548,14 @@ def cmd_text2img(args: argparse.Namespace) -> None:
     mode = detect_mode(base_url, args.mode)
     print(f"[text2img] 模式={mode} base_url={base_url} model={model}", file=sys.stderr)
 
-    if mode == "async":
+    if mode == "dashscope":
+        payload: dict[str, Any] = {
+            "model": model, "prompt": prompt, "n": args.n,
+            "size": args.size,
+        }
+        paths = run_dashscope(base_url, api_key, payload, args.output, args.format,
+                              args.poll_interval, args.timeout)
+    elif mode == "async":
         payload: dict[str, Any] = {
             "model": model, "prompt": prompt, "n": args.n,
             "size": size_to_ratio(args.size), "resolution": args.resolution,
@@ -478,7 +585,16 @@ def cmd_img2img(args: argparse.Namespace) -> None:
     print(f"[img2img] 模式={mode} base_url={base_url} model={model} image={args.image}",
           file=sys.stderr)
 
-    if mode == "async":
+    if mode == "dashscope":
+        # dashscope 图生图：暂不支持参考图，降级为文生图
+        print("[dashscope] 图生图暂不支持参考图，用文生图模式", file=sys.stderr)
+        payload: dict[str, Any] = {
+            "model": model, "prompt": prompt, "n": args.n,
+            "size": args.size,
+        }
+        paths = run_dashscope(base_url, api_key, payload, args.output, args.format,
+                              args.poll_interval, args.timeout)
+    elif mode == "async":
         # apimart：把参考图作为 image_urls 传入生成端点
         payload: dict[str, Any] = {
             "model": model, "prompt": prompt, "n": args.n,
@@ -674,7 +790,7 @@ def _add_common_output(sp: argparse.ArgumentParser) -> None:
     sp.add_argument("--n", type=int, default=1, help="生成数量，默认 1。")
     sp.add_argument("--size", default="1024x1024",
                     help="尺寸。同步用像素（1024x1024 等），异步用比例（1:1、16:9 等）。默认 1024x1024。")
-    sp.add_argument("--mode", choices=("sync", "async"),
+    sp.add_argument("--mode", choices=("sync", "async", "dashscope"),
                     help="API 模式。默认按 base_url 自动检测（含 apimart → async）。")
     sp.add_argument("--resolution", default="2k", choices=VALID_RESOLUTIONS,
                     help="异步模式分辨率档位，默认 2k。")

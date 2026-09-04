@@ -62,8 +62,8 @@ UA = (
 )
 
 # provider 默认值（可被 env / --model 覆盖）
-DEFAULT_DASHSCOPE_BASE = "https://dashscope.aliyuncs.com/api/v1"
-DEFAULT_DASHSCOPE_MODEL = "audio-generation"
+DEFAULT_DASHSCOPE_BASE = "https://dashscope.aliyuncs.com"
+DEFAULT_DASHSCOPE_MODEL = "fun-music-preview"
 DEFAULT_SUNO_MODEL = "music-1"
 
 # 每个 provider 声明所需 env（主名 → 别名元组）。check / 报错都基于这份声明。
@@ -257,17 +257,17 @@ def generate_dashscope(args: argparse.Namespace) -> Path:
                 or DEFAULT_DASHSCOPE_BASE).rstrip("/")
     model = args.model or env_lookup("DASHSCOPE_MUSIC_MODEL") or DEFAULT_DASHSCOPE_MODEL
 
-    endpoint = f"{base_url}/services/aigc/text2audio/generation"
+    endpoint = f"{base_url}/api/v1/services/audio/music/generation"
     input_block: dict[str, Any] = {"prompt": args.prompt}
     if args.lyrics:
         input_block["lyrics"] = args.lyrics
-    parameters: dict[str, Any] = {}
-    if args.duration:
-        parameters["duration"] = args.duration
-    # 纯音乐（无人声）；DashScope 用布尔开关表达
-    parameters["instrumental"] = bool(args.instrumental)
+    # Fun-Music: is_instrumental 在 input 里，不在 parameters
+    if args.instrumental:
+        input_block["is_instrumental"] = True
+    if hasattr(args, 'gender') and args.gender:
+        input_block["gender"] = args.gender
 
-    payload = {"model": model, "input": input_block, "parameters": parameters}
+    payload = {"model": model, "input": input_block}
     headers = {
         "Authorization": f"Bearer {api_key}",
         "X-DashScope-Async": "enable",
@@ -286,7 +286,7 @@ def generate_dashscope(args: argparse.Namespace) -> Path:
         fail(f"提交失败：{message}（code={code}）")
 
     print(f"[dashscope] 任务已提交：{task_id}", file=sys.stderr)
-    task_url = f"{base_url}/tasks/{task_id}"
+    task_url = f"{base_url}/api/v1/tasks/{task_id}"
     poll_headers = {"Authorization": f"Bearer {api_key}"}
     task_output = _poll_dashscope(task_url, poll_headers, args.poll_interval, args.timeout)
 

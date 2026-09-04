@@ -43,7 +43,7 @@ MODEL_GROUPS: dict[str, dict[str, Any]] = {
         "label": "AI 视频生成",
         "settings": [
             _key("VIDEO_PROVIDER", "默认视频 provider", required=False, secret=False,
-                 choices=("dashscope", "ark", "kling", "openai-compatible", "xhs-maas", "agnes")),
+                 choices=("dashscope", "ark", "kling", "openai-compatible", "siliconflow", "xhs-maas", "agnes")),
             _key("VIDEO_CAPABILITIES_JSON", "模型能力覆盖 JSON", required=False, secret=False),
         ],
         "providers": [
@@ -78,6 +78,15 @@ MODEL_GROUPS: dict[str, dict[str, Any]] = {
                          aliases=("OPENAI_BASE_URL", "BASE_URL")),
                     _key("VIDEO_MODEL", "视频模型", required=False, secret=False,
                          aliases=("VIDEO_MODEL_NAME",)),
+                ],
+            },
+            {
+                "id": "siliconflow", "name": "硅基流动 SiliconFlow（Wan I2V/T2V）", "keys": [
+                    _key("SILICONFLOW_API_KEY", "API Key",
+                         aliases=("IMG_API_KEY", "SILICONFLOW_KEY")),
+                    _key("SILICONFLOW_BASE_URL", "根地址", required=False, secret=False,
+                         aliases=("IMG_BASE_URL",)),
+                    _key("SILICONFLOW_VIDEO_MODEL", "视频模型", required=False, secret=False),
                 ],
             },
             {

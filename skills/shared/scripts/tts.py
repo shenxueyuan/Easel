@@ -219,6 +219,9 @@ def _closed_voice_id(voice: str | None) -> str | None:
     if _closed_provider() == "openai-compatible":
         model = (os.environ.get("VOICE_MODEL") or "").strip() or "FunAudioLLM/CosyVoice2-0.5B"
         return f"{model}:alex"
+    # dashscope 预置音色（如 longxiaochun_v2）直接用 voice 参数
+    if voice:
+        return voice
     return None
 
 

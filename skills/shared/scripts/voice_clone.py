@@ -349,7 +349,7 @@ def clone_dashscope(a, out: Path) -> Path:
     instr = instruct_text(getattr(a, "emotion", None))
     if instr:
         inp["instruct"] = instr   # CosyVoice v2 自然语言情感指令（best-effort，网关忽略未知字段）
-    resp = http_json(f"{base}/api/v1/services/audio/tts/generation",
+    resp = http_json(f"{base}/api/v1/services/audio/tts/SpeechSynthesizer",
                      {"Authorization": f"Bearer {key}"},
                      {"model": model, "input": inp,
                       "parameters": {"format": out.suffix.lstrip(".") or "mp3"}})
