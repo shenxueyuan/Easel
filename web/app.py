@@ -14,6 +14,8 @@ import tempfile
 import threading
 import time
 import urllib.request
+from urllib.request import urlopen, Request
+from urllib.error import HTTPError
 import uuid
 from pathlib import Path
 from typing import Literal
@@ -2665,6 +2667,9 @@ class PublishJobRequest(BaseModel):
     platform_contents: dict[str, str] = {}
     native_platforms: list[str] = []       # 原生发布平台 key（xiaohongshu/douyin/...）
     wechatsync_platforms: list[str] = []   # Wechatsync 平台 key（toutiao/juejin/...）
+    voice: str = ''                        # 口播音色（系统音色 voice_id 或克隆音色 voice_id；空=默认）
+    digital_human: str = ''                # 数字人人像照片路径（空=不加数字人）
+    digital_human_pos: str = 'bottom-right'  # 数字人位置：bottom-right/bottom-left/top-right/top-left
 
 
 def _publish_content(req: PublishJobRequest, platform: str) -> str:
@@ -2828,6 +2833,493 @@ async def api_bgm_delete(name: str):
     if meta.pop(full.name, None) is not None:
         _bgm_meta_save(meta)
     return {'ok': True, 'deleted': name}
+
+
+# ── 音色管理（系统音色 + 百炼 CosyVoice 克隆音色）──────────────────────────
+
+VOICES_DIR = LOCAL_OUTPUTS_DIR / '_shared' / 'voices'   # 克隆音色元数据 + 预览音频
+VOICES_META = VOICES_DIR / '_meta.json'                  # 克隆音色元数据
+
+# 百炼 CosyVoice 系统音色（免费，直接可用）
+SYSTEM_VOICES = [
+    {'voice_id': 'longxiaochun_v2', 'name': '龙小淳', 'desc': '知性积极女声', 'tags': '女声·知性', 'type': 'system'},
+    {'voice_id': 'longcheng_v2', 'name': '龙橙', 'desc': '阳光男声', 'tags': '男声·阳光', 'type': 'system'},
+    {'voice_id': 'longhua_v2', 'name': '龙华', 'desc': '活泼女声', 'tags': '女声·活泼', 'type': 'system'},
+    {'voice_id': 'longwan_v2', 'name': '龙婉', 'desc': '柔声女声', 'tags': '女声·温柔', 'type': 'system'},
+    {'voice_id': 'longshu_v2', 'name': '龙书', 'desc': '沉稳男声', 'tags': '男声·沉稳', 'type': 'system'},
+    {'voice_id': 'longyue_v2', 'name': '龙悦', 'desc': '甜美女声', 'tags': '女声·甜美', 'type': 'system'},
+    {'voice_id': 'longji_v2', 'name': '龙吉', 'desc': '少年男声', 'tags': '男声·少年', 'type': 'system'},
+]
+
+PREVIEW_TEXT = '大家好，欢迎来到我的频道，今天和大家分享一个有趣的话题。'
+
+
+def _voices_meta() -> dict:
+    """读取克隆音色元数据。"""
+    try:
+        return json.loads(VOICES_META.read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+
+
+def _voices_meta_save(meta: dict) -> None:
+    VOICES_DIR.mkdir(parents=True, exist_ok=True)
+    VOICES_META.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
+
+
+def _list_clone_voices_from_bailian() -> list[dict]:
+    """调百炼 list_voice 接口获取已克隆音色列表（实时状态）。"""
+    api_key = os.environ.get('DASHSCOPE_API_KEY', '')
+    if not api_key:
+        # 从 .env 读取
+        env_file = PROJECT_ROOT / '.env'
+        if env_file.is_file():
+            for line in env_file.read_text(encoding='utf-8').splitlines():
+                line = line.strip()
+                if line.startswith('DASHSCOPE_API_KEY='):
+                    api_key = line.split('=', 1)[1].strip().strip('"').strip("'")
+                    break
+    if not api_key:
+        return []
+    base_url = os.environ.get('DASHSCOPE_BASE_URL', 'https://dashscope.aliyuncs.com').rstrip('/')
+    try:
+        payload = json.dumps({
+            'model': 'voice-enrollment',
+            'input': {'action': 'list_voice', 'page_size': 100, 'page_index': 0}
+        }).encode()
+        req = Request(base_url + '/api/v1/services/audio/tts/customization',
+                      data=payload,
+                      headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+                      method='POST')
+        with urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read())
+        voices = result.get('output', {}).get('voice_list', [])
+        out = []
+        for v in voices:
+            if v.get('status') == 'OK':
+                out.append({
+                    'voice_id': v['voice_id'],
+                    'status': v['status'],
+                    'created_at': v.get('gmt_create', ''),
+                })
+        return out
+    except Exception:
+        return []
+
+
+@app.get("/api/voices")
+async def api_voices_list():
+    """返回系统音色 + 克隆音色列表。"""
+    # 系统音色
+    voices = list(SYSTEM_VOICES)
+    # 克隆音色：本地元数据 + 百炼实时状态
+    local_meta = _voices_meta()
+    bailian_voices = _list_clone_voices_from_bailian()
+    for vid, info in local_meta.items():
+        # 合并百炼实时状态
+        bailian_match = next((v for v in bailian_voices if v['voice_id'] == vid), None)
+        status = bailian_match['status'] if bailian_match else info.get('status', 'unknown')
+        voices.append({
+            'voice_id': vid,
+            'name': info.get('name', vid),
+            'desc': info.get('desc', '克隆音色'),
+            'tags': f"克隆·{info.get('name', '')}",
+            'type': 'clone',
+            'status': status,
+            'preview_url': f'/api/voices/preview/{vid}',
+        })
+    return {'voices': voices, 'default': NARRATION_VOICE}
+
+
+@app.get("/api/voices/preview/{voice_id}")
+async def api_voices_preview(voice_id: str):
+    """生成或返回音色预览音频（3 秒试听）。懒生成 + 缓存到 _shared/voices/preview/。"""
+    VOICES_DIR.mkdir(parents=True, exist_ok=True)
+    preview_dir = VOICES_DIR / 'preview'
+    preview_dir.mkdir(parents=True, exist_ok=True)
+    # voice_id 可能含斜杠（克隆音色如 cosyvoice-v2-myvoice-xxx），用 hash 做文件名
+    safe_name = hashlib.sha256(voice_id.encode()).hexdigest()[:16]
+    preview_path = preview_dir / f'{safe_name}.mp3'
+    if preview_path.is_file() and preview_path.stat().st_size > 0:
+        return FileResponse(str(preview_path), media_type='audio/mpeg')
+    # 生成预览
+    text_file = preview_dir / f'{safe_name}.txt'
+    text_file.write_text(PREVIEW_TEXT, encoding='utf-8')
+    cmd = [sys.executable, str(SHARED_SCRIPTS / 'tts.py'), 'speak',
+           '--file', str(text_file), '-o', str(preview_path), '--engine', 'auto',
+           '--voice', voice_id]
+    try:
+        proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True,
+                              timeout=60, env=_publish_env())
+        if proc.returncode != 0 or not preview_path.is_file():
+            raise RuntimeError((proc.stderr or proc.stdout or '').strip()[:200] or 'TTS 预览生成失败')
+    except subprocess.TimeoutExpired:
+        raise HTTPException(504, 'TTS 预览超时')
+    except Exception as e:
+        raise HTTPException(500, f'预览生成失败: {e}')
+    return FileResponse(str(preview_path), media_type='audio/mpeg')
+
+
+@app.post("/api/voices/clone")
+async def api_voices_clone(file: UploadFile = File(...), name: str = Form(...)):
+    """声音克隆：上传音频样本 → 调百炼 create_voice → 存 voice_id 到本地元数据。
+
+    音频要求：10-20 秒清晰人声，WAV/MP3/M4A，≤10MB。
+    百炼需要公网可访问 URL，这里先把音频存到本地 outputs/，再上传到百炼文件服务。
+    """
+    # 读取上传音频
+    audio_data = await file.read()
+    if len(audio_data) > 10 * 1024 * 1024:
+        raise HTTPException(413, '音频文件超过 10MB 上限')
+    audio_name = Path(file.filename or 'sample').name
+    ext = Path(audio_name).suffix.lower()
+    if ext not in ('.wav', '.mp3', '.m4a'):
+        raise HTTPException(400, '仅支持 WAV/MP3/M4A 格式')
+
+    VOICES_DIR.mkdir(parents=True, exist_ok=True)
+    samples_dir = VOICES_DIR / 'samples'
+    samples_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = hashlib.sha256(f'{name}_{time.time()}'.encode()).hexdigest()[:12]
+    sample_path = samples_dir / f'{safe_name}{ext}'
+    sample_path.write_bytes(audio_data)
+
+    # 调百炼 create_voice
+    api_key = os.environ.get('DASHSCOPE_API_KEY', '')
+    if not api_key:
+        env_file = PROJECT_ROOT / '.env'
+        if env_file.is_file():
+            for line in env_file.read_text(encoding='utf-8').splitlines():
+                line = line.strip()
+                if line.startswith('DASHSCOPE_API_KEY='):
+                    api_key = line.split('=', 1)[1].strip().strip('"').strip("'")
+                    break
+    if not api_key:
+        raise HTTPException(500, 'DASHSCOPE_API_KEY 未配置')
+
+    base_url = os.environ.get('DASHSCOPE_BASE_URL', 'https://dashscope.aliyuncs.com').rstrip('/')
+
+    # 百炼需要公网 URL；先用 file upload API 上传音频
+    try:
+        # 方式1：用百炼文件上传 API 获取临时 URL
+        upload_url = base_url + '/api/v1/uploads'
+        # 构造 multipart 上传
+        boundary = '----EaselBoundary' + safe_name
+        body = (
+            f'--{boundary}\r\n'
+            f'Content-Disposition: form-data; name="file"; filename="{sample_path.name}"\r\n'
+            f'Content-Type: application/octet-stream\r\n\r\n'
+        ).encode() + audio_data + f'\r\n--{boundary}--\r\n'.encode()
+        upload_req = Request(upload_url, data=body,
+                             headers={
+                                 'Authorization': f'Bearer {api_key}',
+                                 'Content-Type': f'multipart/form-data; boundary={boundary}',
+                             }, method='POST')
+        with urlopen(upload_req, timeout=30) as resp:
+            upload_result = json.loads(resp.read())
+        sample_url = upload_result.get('output', {}).get('uploaded_url', '')
+        if not sample_url:
+            # 方式2：用 file:// 协议（仅限百炼同 region 部署时）
+            raise RuntimeError('百炼文件上传失败，未获取到音频 URL')
+    except HTTPError as e:
+        detail = e.read().decode()[:300] if hasattr(e, 'read') else str(e)
+        raise HTTPException(502, f'百炼文件上传失败: {detail}')
+    except Exception as e:
+        raise HTTPException(502, f'音频上传失败: {e}')
+
+    # 创建克隆音色
+    prefix = re.sub(r'[^a-zA-Z0-9]', '', name)[:10] or 'easel'
+    try:
+        payload = json.dumps({
+            'model': 'voice-enrollment',
+            'input': {
+                'action': 'create_voice',
+                'target_model': 'cosyvoice-v2',
+                'prefix': prefix,
+                'url': sample_url,
+                'language_hints': ['zh'],
+            }
+        }).encode()
+        req = Request(base_url + '/api/v1/services/audio/tts/customization',
+                      data=payload,
+                      headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+                      method='POST')
+        with urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+        voice_id = result.get('output', {}).get('voice_id', '')
+        if not voice_id:
+            raise RuntimeError(f'百炼未返回 voice_id: {json.dumps(result, ensure_ascii=False)[:200]}')
+    except HTTPError as e:
+        detail = e.read().decode()[:300] if hasattr(e, 'read') else str(e)
+        raise HTTPException(502, f'百炼克隆失败: {detail}')
+    except Exception as e:
+        raise HTTPException(502, f'声音克隆失败: {e}')
+
+    # 存到本地元数据
+    meta = _voices_meta()
+    meta[voice_id] = {
+        'name': name,
+        'desc': f'克隆音色·{name}',
+        'sample_file': str(sample_path.relative_to(LOCAL_OUTPUTS_DIR.resolve())),
+        'created_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'status': 'DEPLOYING',
+    }
+    _voices_meta_save(meta)
+
+    return {'ok': True, 'voice_id': voice_id, 'name': name, 'status': 'DEPLOYING'}
+
+
+@app.get("/api/voices/clone/status/{voice_id}")
+async def api_voices_clone_status(voice_id: str):
+    """查询克隆音色状态（DEPLOYING → OK）。"""
+    api_key = os.environ.get('DASHSCOPE_API_KEY', '')
+    if not api_key:
+        env_file = PROJECT_ROOT / '.env'
+        if env_file.is_file():
+            for line in env_file.read_text(encoding='utf-8').splitlines():
+                line = line.strip()
+                if line.startswith('DASHSCOPE_API_KEY='):
+                    api_key = line.split('=', 1)[1].strip().strip('"').strip("'")
+                    break
+    if not api_key:
+        raise HTTPException(500, 'DASHSCOPE_API_KEY 未配置')
+    base_url = os.environ.get('DASHSCOPE_BASE_URL', 'https://dashscope.aliyuncs.com').rstrip('/')
+    try:
+        payload = json.dumps({
+            'model': 'voice-enrollment',
+            'input': {'action': 'query_voice', 'voice_id': voice_id}
+        }).encode()
+        req = Request(base_url + '/api/v1/services/audio/tts/customization',
+                      data=payload,
+                      headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+                      method='POST')
+        with urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read())
+        status = result.get('output', {}).get('status', 'unknown')
+        # 更新本地元数据
+        meta = _voices_meta()
+        if voice_id in meta:
+            meta[voice_id]['status'] = status
+            _voices_meta_save(meta)
+        return {'voice_id': voice_id, 'status': status}
+    except Exception as e:
+        return {'voice_id': voice_id, 'status': 'error', 'message': str(e)}
+
+
+@app.delete("/api/voices/clone/{voice_id}")
+async def api_voices_clone_delete(voice_id: str):
+    """删除克隆音色（百炼 + 本地元数据）。"""
+    api_key = os.environ.get('DASHSCOPE_API_KEY', '')
+    if not api_key:
+        env_file = PROJECT_ROOT / '.env'
+        if env_file.is_file():
+            for line in env_file.read_text(encoding='utf-8').splitlines():
+                line = line.strip()
+                if line.startswith('DASHSCOPE_API_KEY='):
+                    api_key = line.split('=', 1)[1].strip().strip('"').strip("'")
+                    break
+    base_url = os.environ.get('DASHSCOPE_BASE_URL', 'https://dashscope.aliyuncs.com').rstrip('/')
+    # 调百炼删除
+    if api_key:
+        try:
+            payload = json.dumps({
+                'model': 'voice-enrollment',
+                'input': {'action': 'delete_voice', 'voice_id': voice_id}
+            }).encode()
+            req = Request(base_url + '/api/v1/services/audio/tts/customization',
+                          data=payload,
+                          headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+                          method='POST')
+            urlopen(req, timeout=15)
+        except Exception:
+            pass  # 即使百炼删除失败也清理本地
+    # 清理本地
+    meta = _voices_meta()
+    meta.pop(voice_id, None)
+    _voices_meta_save(meta)
+    # 清理预览缓存
+    safe_name = hashlib.sha256(voice_id.encode()).hexdigest()[:16]
+    preview = VOICES_DIR / 'preview' / f'{safe_name}.mp3'
+    if preview.is_file():
+        preview.unlink()
+    return {'ok': True, 'deleted': voice_id}
+
+
+# ── 数字人（百炼 悦动人像 EMO）──────────────────────────────────────────
+
+EMO_BASE = 'https://dashscope.aliyuncs.com/api/v1'
+EMO_TASKS: dict[str, dict] = {}  # 内存存任务状态（job_id → {task_id, status, video_path, ...}）
+
+
+def _bailian_api_key() -> str:
+    """从环境变量或 .env 读取 DASHSCOPE_API_KEY。"""
+    api_key = os.environ.get('DASHSCOPE_API_KEY', '')
+    if api_key:
+        return api_key
+    env_file = PROJECT_ROOT / '.env'
+    if env_file.is_file():
+        for line in env_file.read_text(encoding='utf-8').splitlines():
+            line = line.strip()
+            if line.startswith('DASHSCOPE_API_KEY='):
+                return line.split('=', 1)[1].strip().strip('"').strip("'")
+    return ''
+
+
+def _upload_to_bailian(file_path: Path, api_key: str) -> str:
+    """上传文件到百炼文件服务，返回公网可访问 URL。"""
+    url = EMO_BASE.rsplit('/api/v1', 1)[0] + '/api/v1/uploads'
+    boundary = '----EaselBoundary' + hashlib.sha256(str(file_path).encode()).hexdigest()[:12]
+    data = file_path.read_bytes()
+    body = (
+        f'--{boundary}\r\n'
+        f'Content-Disposition: form-data; name="file"; filename="{file_path.name}"\r\n'
+        f'Content-Type: application/octet-stream\r\n\r\n'
+    ).encode() + data + f'\r\n--{boundary}--\r\n'.encode()
+    req = Request(url, data=body,
+                  headers={'Authorization': f'Bearer {api_key}',
+                           'Content-Type': f'multipart/form-data; boundary={boundary}'},
+                  method='POST')
+    with urlopen(req, timeout=60) as resp:
+        result = json.loads(resp.read())
+    uploaded = result.get('output', {}).get('uploaded_url', '')
+    if not uploaded:
+        raise RuntimeError(f'百炼文件上传失败: {json.dumps(result, ensure_ascii=False)[:200]}')
+    return uploaded
+
+
+def _emo_detect(image_url: str, api_key: str, ratio: str = '1:1') -> dict:
+    """EMO 图像检测，返回 face_bbox 和 ext_bbox。"""
+    payload = json.dumps({
+        'model': 'emo-detect-v1',
+        'input': {'image_url': image_url},
+        'parameters': {'ratio': ratio},
+    }).encode()
+    req = Request(EMO_BASE + '/services/aigc/image2video/face-detect',
+                  data=payload,
+                  headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+                  method='POST')
+    with urlopen(req, timeout=30) as resp:
+        result = json.loads(resp.read())
+    output = result.get('output', {})
+    if not output.get('check_pass', False):
+        raise RuntimeError(f'EMO 图像检测未通过: {output}')
+    return {'face_bbox': output['face_bbox'], 'ext_bbox': output['ext_bbox']}
+
+
+def _emo_create_task(image_url: str, audio_url: str, face_bbox: list, ext_bbox: list,
+                     api_key: str, style_level: str = 'normal') -> str:
+    """创建 EMO 视频生成异步任务，返回 task_id。"""
+    payload = json.dumps({
+        'model': 'emo-v1',
+        'input': {
+            'image_url': image_url,
+            'audio_url': audio_url,
+            'face_bbox': face_bbox,
+            'ext_bbox': ext_bbox,
+        },
+        'parameters': {'style_level': style_level},
+    }).encode()
+    req = Request(EMO_BASE + '/services/aigc/image2video/video-synthesis',
+                  data=payload,
+                  headers={'Authorization': f'Bearer {api_key}',
+                           'Content-Type': 'application/json',
+                           'X-DashScope-Async': 'enable'},
+                  method='POST')
+    with urlopen(req, timeout=30) as resp:
+        result = json.loads(resp.read())
+    task_id = result.get('output', {}).get('task_id', '')
+    if not task_id:
+        raise RuntimeError(f'EMO 任务创建失败: {json.dumps(result, ensure_ascii=False)[:200]}')
+    return task_id
+
+
+def _emo_query_task(task_id: str, api_key: str) -> dict:
+    """查询 EMO 任务状态。"""
+    req = Request(EMO_BASE + f'/tasks/{task_id}',
+                  headers={'Authorization': f'Bearer {api_key}'},
+                  method='GET')
+    with urlopen(req, timeout=15) as resp:
+        result = json.loads(resp.read())
+    output = result.get('output', {})
+    status = output.get('task_status', 'unknown')
+    video_url = output.get('results', {}).get('video_url', '')
+    return {'status': status, 'video_url': video_url}
+
+
+@app.post("/api/digital-human/generate")
+async def api_digital_human_generate(image: str = Form(...), audio: str = Form(...),
+                                     pos: str = Form('bottom-right')):
+    """启动数字人生成任务（百炼 EMO）。
+
+    image/audio 是 outputs/ 下的相对路径，后端上传到百炼后调 EMO。
+    返回 task_key 用于轮询状态。
+    """
+    api_key = _bailian_api_key()
+    if not api_key:
+        raise HTTPException(500, 'DASHSCOPE_API_KEY 未配置')
+    img_path = _safe_output_path(image)
+    audio_path = _safe_output_path(audio)
+    if not img_path.is_file():
+        raise HTTPException(404, f'图片不存在: {image}')
+    if not audio_path.is_file():
+        raise HTTPException(404, f'音频不存在: {audio}')
+    # 上传到百炼
+    try:
+        image_url = _upload_to_bailian(img_path, api_key)
+        audio_url = _upload_to_bailian(audio_path, api_key)
+    except Exception as e:
+        raise HTTPException(502, f'文件上传失败: {e}')
+    # EMO 检测 + 创建任务
+    try:
+        bbox = _emo_detect(image_url, api_key)
+        task_id = _emo_create_task(image_url, audio_url, bbox['face_bbox'], bbox['ext_bbox'], api_key)
+    except HTTPError as e:
+        detail = e.read().decode()[:300] if hasattr(e, 'read') else str(e)
+        raise HTTPException(502, f'EMO 调用失败: {detail}')
+    except Exception as e:
+        raise HTTPException(502, f'数字人生成失败: {e}')
+    task_key = hashlib.sha256(f'{task_id}_{time.time()}'.encode()).hexdigest()[:12]
+    EMO_TASKS[task_key] = {
+        'task_id': task_id,
+        'status': 'PENDING',
+        'image': image,
+        'audio': audio,
+        'pos': pos,
+        'video_path': '',
+        'created_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+    }
+    return {'ok': True, 'task_key': task_key, 'task_id': task_id, 'status': 'PENDING'}
+
+
+@app.get("/api/digital-human/status/{task_key}")
+async def api_digital_human_status(task_key: str):
+    """查询数字人生成任务状态，成功时下载视频到本地。"""
+    task = EMO_TASKS.get(task_key)
+    if not task:
+        raise HTTPException(404, '任务不存在')
+    if task['status'] in ('SUCCEEDED', 'FAILED', 'CANCELED'):
+        return {'status': task['status'], 'video_path': task.get('video_path', '')}
+    api_key = _bailian_api_key()
+    if not api_key:
+        raise HTTPException(500, 'DASHSCOPE_API_KEY 未配置')
+    try:
+        result = _emo_query_task(task['task_id'], api_key)
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
+    status = result['status']
+    task['status'] = status
+    if status == 'SUCCEEDED' and result['video_url']:
+        # 下载视频到本地
+        dh_dir = OUTPUTS_DIR.resolve() / '_shared' / 'digital-human'
+        dh_dir.mkdir(parents=True, exist_ok=True)
+        video_path = dh_dir / f'{task_key}.mp4'
+        try:
+            req = Request(result['video_url'])
+            with urlopen(req, timeout=120) as resp:
+                video_path.write_bytes(resp.read())
+            task['video_path'] = str(video_path.relative_to(OUTPUTS_DIR.resolve()))
+        except Exception as e:
+            return {'status': 'error', 'message': f'视频下载失败: {e}'}
+    return {'status': status, 'video_path': task.get('video_path', '')}
 
 
 def _split_captions(body: str, n: int) -> list[str]:
@@ -2996,6 +3488,60 @@ def _probe_audio_duration(path: Path) -> float:
         return 0.0
 
 
+def _overlay_digital_human(main_video: Path, dh_image_rel: str, audio_path: Path,
+                           pos: str, work_dir: Path) -> str:
+    """用百炼 EMO 生成数字人视频并 overlay 到主视频。返回描述信息（成功）或空串（跳过/失败）。"""
+    api_key = _bailian_api_key()
+    if not api_key:
+        return '数字人跳过（未配置 DASHSCOPE_API_KEY）'
+    img_path = _safe_output_path(dh_image_rel)
+    if not img_path.is_file():
+        return f'数字人跳过（图片不存在: {dh_image_rel}）'
+    try:
+        # 上传图片和音频到百炼
+        image_url = _upload_to_bailian(img_path, api_key)
+        audio_url = _upload_to_bailian(audio_path, api_key)
+        # EMO 检测 + 创建任务
+        bbox = _emo_detect(image_url, api_key)
+        task_id = _emo_create_task(image_url, audio_url, bbox['face_bbox'], bbox['ext_bbox'], api_key)
+        # 轮询等待（最多 10 分钟）
+        for _ in range(40):
+            time.sleep(15)
+            result = _emo_query_task(task_id, api_key)
+            if result['status'] == 'SUCCEEDED' and result['video_url']:
+                # 下载数字人视频
+                dh_dir = work_dir / 'digital_human'
+                dh_dir.mkdir(parents=True, exist_ok=True)
+                dh_video = dh_dir / 'dh.mp4'
+                req = Request(result['video_url'])
+                with urlopen(req, timeout=120) as resp:
+                    dh_video.write_bytes(resp.read())
+                # FFmpeg overlay
+                pos_map = {
+                    'bottom-right': 'W-w-30:H-h-30',
+                    'bottom-left': '30:H-h-30',
+                    'top-right': 'W-w-30:30',
+                    'top-left': '30:30',
+                }
+                overlay_pos = pos_map.get(pos, pos_map['bottom-right'])
+                out_final = main_video.with_suffix('.dh.mp4')
+                cmd = ['ffmpeg', '-y', '-i', str(main_video), '-i', str(dh_video),
+                       '-filter_complex',
+                       f'[1:v]scale=200:200[dh];[0:v][dh]overlay={overlay_pos}',
+                       '-c:a', 'copy', '-c:v', 'libx264', '-preset', 'fast',
+                       str(out_final)]
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                if proc.returncode == 0 and out_final.is_file():
+                    out_final.replace(main_video)
+                    return '数字人已叠加'
+                return '数字人 overlay 失败'
+            if result['status'] in ('FAILED', 'CANCELED'):
+                return f'数字人生成失败: {result["status"]}'
+        return '数字人超时（>10min）'
+    except Exception as e:
+        return f'数字人跳过: {e}'
+
+
 def _generate_publish_video(job_id: str, req: PublishJobRequest) -> dict:
     images, videos = _publish_media(req)
     if videos:
@@ -3003,7 +3549,10 @@ def _generate_publish_video(job_id: str, req: PublishJobRequest) -> dict:
                 'media_path': str(videos[0].relative_to(OUTPUTS_DIR.resolve()))}
     if not images:
         return {'status': 'fail', 'message': '没有可用于生成视频的图片', 'verified': False}
-    fingerprint = hashlib.sha256((req.title + '|' + '|'.join(str(p) for p in images)).encode('utf-8')).hexdigest()[:12]
+    # 音色：Job 请求指定 > 默认
+    narration_voice = req.voice.strip() if req.voice and req.voice.strip() else NARRATION_VOICE
+    fingerprint = hashlib.sha256((req.title + '|' + '|'.join(str(p) for p in images)
+                                 + '|' + narration_voice).encode('utf-8')).hexdigest()[:12]
     output_root = OUTPUTS_DIR.resolve()
     out_dir = output_root / '_generated_videos'
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -3034,7 +3583,7 @@ def _generate_publish_video(job_id: str, req: PublishJobRequest) -> dict:
     for i, script in enumerate(narration_scripts):
         seg_path = work_dir / f'narration_{i:02d}.mp3'
         seg_srt = work_dir / f'narration_{i:02d}.srt'
-        ok, err = _generate_narration_segment(script, seg_path, NARRATION_VOICE, seg_srt)
+        ok, err = _generate_narration_segment(script, seg_path, narration_voice, seg_srt)
         if ok:
             seg_paths.append(seg_path)
             seg_durations.append(_probe_audio_duration(seg_path))
@@ -3106,6 +3655,11 @@ def _generate_publish_video(job_id: str, req: PublishJobRequest) -> dict:
         return {'status': 'fail', 'message': detail or '视频生成失败', 'verified': False,
                 'returncode': proc.returncode, 'stdout': (proc.stdout or '')[-2000:], 'stderr': (proc.stderr or '')[-2000:]}
 
+    # 6.5 数字人 overlay（可选）
+    dh_msg = ''
+    if req.digital_human and narration_path and narration_path.is_file():
+        dh_msg = _overlay_digital_human(out, req.digital_human, narration_path, req.digital_human_pos, work_dir)
+
     # 清理工作目录
     try:
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -3116,6 +3670,8 @@ def _generate_publish_video(job_id: str, req: PublishJobRequest) -> dict:
         req.media.append(rel)
     parts = [f'口播({narration_source})' if narration_path else '无口播',
             f'BGM {bgm.name}' if bgm else '静音']
+    if dh_msg:
+        parts.append(dh_msg)
     return {'status': 'verified', 'message': f'视频版已生成 · {" · ".join(parts)}',
             'verified': True, 'media_path': rel, 'returncode': proc.returncode,
             'stdout': (proc.stdout or '')[-2000:], 'stderr': (proc.stderr or '')[-2000:]}

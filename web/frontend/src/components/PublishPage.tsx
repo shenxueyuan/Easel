@@ -4,8 +4,9 @@ import {
   fetchAccounts, fetchOutputs, mediaUrl,
   checkWechatsync, wechatsyncPing, fetchWechatsyncPlatforms,
   createPublishJob, getPublishJob, listPublishJobs, cancelPublishJob, submitPublishSms,
+  fetchVoices, cloneVoice, queryCloneStatus, deleteCloneVoice,
 } from '../lib/api';
-import type { AccountItem, OutputFile, PublishJob, PublishJobTask, WechatsyncPlatform } from '../lib/api';
+import type { AccountItem, OutputFile, PublishJob, PublishJobTask, WechatsyncPlatform, VoiceItem } from '../lib/api';
 import { loadPublishDraft, savePublishDraft } from '../lib/store';
 import { renderMarkdown } from '../lib/sanitize';
 import { IconPublish, IconCopy, IconCheck, IconCalendar, IconSkills, IconEdit, IconStop, IconTrash } from './icons';
@@ -89,6 +90,21 @@ export default function PublishPage({ persona }: PublishPageProps) {
   const [extConnected, setExtConnected] = useState<boolean | null>(null);   // null=未知
   const [extMessage, setExtMessage] = useState('');
   const [extPinging, setExtPinging] = useState(false);
+
+  // 音色 + 数字人
+  const [voices, setVoices] = useState<VoiceItem[]>([]);
+  const [defaultVoice, setDefaultVoice] = useState('longxiaochun_v2');
+  const [selectedVoice, setSelectedVoice] = useState('');
+  const [voiceLoading, setVoiceLoading] = useState(false);
+  const [previewAudio, setPreviewAudio] = useState<HTMLAudioElement | null>(null);
+  const [previewingVoice, setPreviewingVoice] = useState('');
+  const [showCloneDialog, setShowCloneDialog] = useState(false);
+  const [cloneName, setCloneName] = useState('');
+  const [cloneFile, setCloneFile] = useState<File | null>(null);
+  const [cloning, setCloning] = useState(false);
+  const [cloneStatus, setCloneStatus] = useState('');
+  const [digitalHuman, setDigitalHuman] = useState('');
+  const [digitalHumanPos, setDigitalHumanPos] = useState('bottom-right');
   const [publishing, setPublishing] = useState(false);
 
   // 预检缓存：按内容指纹缓存，内容没变就不重复请求 AI
@@ -180,9 +196,10 @@ export default function PublishPage({ persona }: PublishPageProps) {
 
   useEffect(() => () => adaptCtl.current?.abort(), []);   // 离开页面中止流
 
-  // 登录态 + 可选媒体列表 + Wechatsync 状态
+  // 登录态 + 可选媒体列表 + Wechatsync 状态 + 音色列表
   useEffect(() => {
     fetchAccounts().then(setAccounts).catch(() => { /* 忽略 */ });
+    fetchVoices().then((r) => { setVoices(r.voices); setDefaultVoice(r.default); if (!selectedVoice) setSelectedVoice(r.default); }).catch(() => { /* 忽略 */ });
     checkWechatsync().then((s) => {
       setWsReady(s.ready);
       setExtConnected(s.extension_connected ?? null);
@@ -210,6 +227,59 @@ export default function PublishPage({ persona }: PublishPageProps) {
     setWsSyncPlatforms((prev) => prev.filter((x) => x !== k));
   };
   const showToast = (m: string) => { setToast(m); setTimeout(() => setToast(''), 2800); };
+
+  // 音色预览
+  const previewVoice = (voiceId: string) => {
+    if (previewingVoice === voiceId && previewAudio) { previewAudio.pause(); setPreviewingVoice(''); return; }
+    if (previewAudio) previewAudio.pause();
+    const url = `/api/voices/preview/${encodeURIComponent(voiceId)}`;
+    const audio = new Audio(url);
+    audio.onended = () => setPreviewingVoice('');
+    audio.onerror = () => { showToast('试听生成失败'); setPreviewingVoice(''); };
+    audio.play().catch(() => { showToast('试听加载中，请稍候重试'); setPreviewingVoice(''); });
+    setPreviewAudio(audio);
+    setPreviewingVoice(voiceId);
+  };
+
+  // 声音克隆
+  const handleClone = async () => {
+    if (!cloneName.trim() || !cloneFile) { showToast('请填写名称并上传音频'); return; }
+    setCloning(true); setCloneStatus('上传中…');
+    try {
+      const r = await cloneVoice(cloneFile, cloneName.trim());
+      setCloneStatus(`克隆中…voice_id=${r.voice_id.slice(0, 20)}…`);
+      // 轮询状态
+      const poll = async () => {
+        for (let i = 0; i < 20; i++) {
+          await new Promise((res) => setTimeout(res, 3000));
+          const s = await queryCloneStatus(r.voice_id);
+          if (s.status === 'OK') {
+            setCloneStatus('✅ 克隆成功');
+            fetchVoices().then((r2) => setVoices(r2.voices)).catch(() => {});
+            setSelectedVoice(r.voice_id);
+            setTimeout(() => { setShowCloneDialog(false); setCloneName(''); setCloneFile(null); setCloneStatus(''); }, 1500);
+            return;
+          }
+          if (s.status === 'error' || s.status === 'UNDEPLOYED') {
+            setCloneStatus(`❌ 克隆失败: ${s.message || s.status}`);
+            return;
+          }
+          setCloneStatus(`状态: ${s.status}…（${i + 1}/20）`);
+        }
+        setCloneStatus('⏳ 仍在部署中，稍后自动刷新');
+      };
+      poll();
+    } catch (e) {
+      setCloneStatus(`❌ ${e instanceof Error ? e.message : '克隆失败'}`);
+    } finally { setCloning(false); }
+  };
+
+  // 删除克隆音色
+  const handleDeleteVoice = async (voiceId: string) => {
+    if (!window.confirm('确定删除该克隆音色？')) return;
+    try { await deleteCloneVoice(voiceId); setVoices((v) => v.filter((x) => x.voice_id !== voiceId)); if (selectedVoice === voiceId) setSelectedVoice(defaultVoice); showToast('已删除'); }
+    catch { showToast('删除失败'); }
+  };
 
   const effective = (k: string) => overrides[k] ?? body;
   const empty = !title.trim() && !body.trim();
@@ -356,6 +426,9 @@ export default function PublishPage({ persona }: PublishPageProps) {
         platform_contents: overrides,
         native_platforms: canPublish.map((t) => t.key),
         wechatsync_platforms: wsTargets.map((t) => t.key),
+        voice: selectedVoice || defaultVoice,
+        digital_human: digitalHuman || '',
+        digital_human_pos: digitalHumanPos,
       });
       setActiveJob(job);
       syncJobToPub(job);
@@ -610,6 +683,88 @@ export default function PublishPage({ persona }: PublishPageProps) {
             ))}
           </div>
         )}
+
+        {/* 音色选择 + 声音克隆 */}
+        <label className="field-label" style={{ marginTop: 12 }}>
+          口播音色 {selectedVoice && <span className="pv-badge">{voices.find((v) => v.voice_id === selectedVoice)?.name || selectedVoice}</span>}
+          <span style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: 12 }}>（图文转视频时使用；可试听后选择）</span>
+        </label>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <select className="input" style={{ maxWidth: 260 }} value={selectedVoice} onChange={(e) => setSelectedVoice(e.target.value)}>
+            <optgroup label="系统音色">
+              {voices.filter((v) => v.type === 'system').map((v) => (
+                <option key={v.voice_id} value={v.voice_id}>{v.name} · {v.desc}</option>
+              ))}
+            </optgroup>
+            {voices.some((v) => v.type === 'clone') && (
+              <optgroup label="克隆音色">
+                {voices.filter((v) => v.type === 'clone').map((v) => (
+                  <option key={v.voice_id} value={v.voice_id}>
+                    {v.name} · {v.status === 'OK' ? '可用' : v.status || '部署中'}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+          <button className="btn btn-sm" type="button"
+            onClick={() => previewVoice(selectedVoice)}
+            disabled={!selectedVoice}>
+            {previewingVoice === selectedVoice ? '⏸ 停止' : '▶ 试听'}
+          </button>
+          <button className="btn btn-sm" type="button" onClick={() => setShowCloneDialog((v) => !v)}>
+            🎙 克隆声音
+          </button>
+          {selectedVoice && voices.find((v) => v.voice_id === selectedVoice)?.type === 'clone' && (
+            <button className="btn btn-sm" type="button" onClick={() => handleDeleteVoice(selectedVoice)} title="删除该克隆音色">
+              <IconTrash size={13} />
+            </button>
+          )}
+        </div>
+
+        {/* 声音克隆弹窗 */}
+        {showCloneDialog && (
+          <div className="dash-section" style={{ marginTop: 8, padding: 12, border: '1px solid var(--border)', borderRadius: 8 }}>
+            <div style={{ fontWeight: 600, marginBottom: 8 }}>🎙 声音克隆（百炼 CosyVoice，免费）</div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+              上传 10-20 秒清晰人声音频（WAV/MP3/M4A，≤10MB），系统自动克隆声纹生成专属音色。
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <input className="input" style={{ maxWidth: 160 }} placeholder="音色名称（如"我的声音"）"
+                value={cloneName} onChange={(e) => setCloneName(e.target.value)} />
+              <input type="file" accept=".wav,.mp3,.m4a" onChange={(e) => setCloneFile(e.target.files?.[0] || null)} />
+              <button className="btn btn-sm btn-primary" type="button" onClick={handleClone} disabled={cloning || !cloneName.trim() || !cloneFile}>
+                {cloning ? '克隆中…' : '开始克隆'}
+              </button>
+              <button className="btn btn-sm" type="button" onClick={() => { setShowCloneDialog(false); setCloneStatus(''); setCloneName(''); setCloneFile(null); }}>取消</button>
+            </div>
+            {cloneStatus && <div style={{ marginTop: 8, fontSize: 13 }}>{cloneStatus}</div>}
+          </div>
+        )}
+
+        {/* 数字人选项 */}
+        <label className="field-label" style={{ marginTop: 12 }}>
+          数字人形象
+          <span style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: 12 }}>（可选：选一张人像照片，生成视频时在右下角叠加说话的数字人）</span>
+        </label>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <select className="input" style={{ maxWidth: 260 }} value={digitalHuman} onChange={(e) => setDigitalHuman(e.target.value)}>
+            <option value="">不使用数字人</option>
+            {mediaFiles.filter((f) => f.kind === 'image').slice(0, 30).map((f) => (
+              <option key={f.path} value={f.path}>{f.name}</option>
+            ))}
+          </select>
+          {digitalHuman && (
+            <>
+              <select className="input" style={{ maxWidth: 140 }} value={digitalHumanPos} onChange={(e) => setDigitalHumanPos(e.target.value)}>
+                <option value="bottom-right">右下角</option>
+                <option value="bottom-left">左下角</option>
+                <option value="top-right">右上角</option>
+                <option value="top-left">左上角</option>
+              </select>
+              <img src={mediaUrl(digitalHuman)} alt="数字人预览" style={{ width: 40, height: 40, borderRadius: 4, objectFit: 'cover' }} />
+            </>
+          )}
+        </div>
 
         <div className="publish-actions">
           {adapting ? (

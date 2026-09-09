@@ -597,6 +597,9 @@ export function createPublishJob(data: {
   platform_contents: Record<string, string>;
   native_platforms: string[];
   wechatsync_platforms: string[];
+  voice?: string;
+  digital_human?: string;
+  digital_human_pos?: string;
 }): Promise<PublishJob> {
   return request<PublishJob>('/api/publish/jobs', {
     method: 'POST',
@@ -657,6 +660,51 @@ export function updateBgmStyle(name: string, style: string): Promise<{ ok: boole
 
 export function deleteBgm(name: string): Promise<{ ok: boolean }> {
   return request(`/api/bgm/${encodeURIComponent(name)}`, { method: 'DELETE' });
+}
+
+// ── 音色管理 ──────────────────────────────────────────────
+
+export interface VoiceItem {
+  voice_id: string;
+  name: string;
+  desc: string;
+  tags: string;
+  type: 'system' | 'clone';
+  status?: string;
+  preview_url?: string;
+}
+
+export function fetchVoices(): Promise<{ voices: VoiceItem[]; default: string }> {
+  return request('/api/voices');
+}
+
+export function cloneVoice(file: File, name: string): Promise<{ ok: boolean; voice_id: string; name: string; status: string }> {
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('name', name);
+  return fetch('/api/voices/clone', { method: 'POST', body: fd }).then((r) => r.json());
+}
+
+export function queryCloneStatus(voiceId: string): Promise<{ voice_id: string; status: string; message?: string }> {
+  return request(`/api/voices/clone/status/${encodeURIComponent(voiceId)}`);
+}
+
+export function deleteCloneVoice(voiceId: string): Promise<{ ok: boolean }> {
+  return request(`/api/voices/clone/${encodeURIComponent(voiceId)}`, { method: 'DELETE' });
+}
+
+// ── 数字人（百炼 EMO）─────────────────────────────────────
+
+export function generateDigitalHuman(image: string, audio: string, pos: string): Promise<{ ok: boolean; task_key: string; task_id: string; status: string }> {
+  const fd = new FormData();
+  fd.append('image', image);
+  fd.append('audio', audio);
+  fd.append('pos', pos);
+  return fetch('/api/digital-human/generate', { method: 'POST', body: fd }).then((r) => r.json());
+}
+
+export function queryDigitalHumanStatus(taskKey: string): Promise<{ status: string; video_path?: string; message?: string }> {
+  return request(`/api/digital-human/status/${encodeURIComponent(taskKey)}`);
 }
 
 export function startLogin(platform: string): Promise<LoginStart> {
