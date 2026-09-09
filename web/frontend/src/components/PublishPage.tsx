@@ -729,7 +729,7 @@ export default function PublishPage({ persona }: PublishPageProps) {
               上传 10-20 秒清晰人声音频（WAV/MP3/M4A，≤10MB），系统自动克隆声纹生成专属音色。
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-              <input className="input" style={{ maxWidth: 160 }} placeholder="音色名称（如"我的声音"）"
+              <input className="input" style={{ maxWidth: 160 }} placeholder='音色名称（如"我的声音"）'
                 value={cloneName} onChange={(e) => setCloneName(e.target.value)} />
               <input type="file" accept=".wav,.mp3,.m4a" onChange={(e) => setCloneFile(e.target.files?.[0] || null)} />
               <button className="btn btn-sm btn-primary" type="button" onClick={handleClone} disabled={cloning || !cloneName.trim() || !cloneFile}>
