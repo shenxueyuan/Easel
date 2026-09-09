@@ -3291,25 +3291,24 @@ def _bailian_api_key() -> str:
 
 
 def _upload_to_bailian(file_path: Path, api_key: str) -> str:
-    """上传文件到百炼文件服务，返回公网可访问 URL。"""
-    url = EMO_BASE.rsplit('/api/v1', 1)[0] + '/api/v1/uploads'
-    boundary = '----EaselBoundary' + hashlib.sha256(str(file_path).encode()).hexdigest()[:12]
-    data = file_path.read_bytes()
-    body = (
-        f'--{boundary}\r\n'
-        f'Content-Disposition: form-data; name="file"; filename="{file_path.name}"\r\n'
-        f'Content-Type: application/octet-stream\r\n\r\n'
-    ).encode() + data + f'\r\n--{boundary}--\r\n'.encode()
-    req = Request(url, data=body,
-                  headers={'Authorization': f'Bearer {api_key}',
-                           'Content-Type': f'multipart/form-data; boundary={boundary}'},
-                  method='POST')
-    with urlopen(req, timeout=60) as resp:
-        result = json.loads(resp.read())
-    uploaded = result.get('output', {}).get('uploaded_url', '')
+    """上传文件到百炼文件服务，返回公网可访问 URL。
+
+    用 dashscope SDK 的 Files.upload + Files.get 两步法：
+    1. Files.upload 上传文件，返回 file_id
+    2. Files.get 获取带签名的公网 OSS URL（无需鉴权，百炼服务可直接访问）
+    """
+    import dashscope
+    dashscope.api_key = api_key
+    upload_resp = dashscope.Files.upload(file_path=str(file_path), purpose='file-extract')
+    uploaded = upload_resp.output.get('uploaded_files', [])
     if not uploaded:
-        raise RuntimeError(f'百炼文件上传失败: {json.dumps(result, ensure_ascii=False)[:200]}')
-    return uploaded
+        raise RuntimeError(f'百炼文件上传失败: {upload_resp}')
+    file_id = uploaded[0]['file_id']
+    file_resp = dashscope.Files.get(file_id=file_id)
+    url = file_resp.output.get('url', '')
+    if not url:
+        raise RuntimeError(f'百炼文件上传成功但未返回下载 URL: {file_resp}')
+    return url
 
 
 def _emo_detect(image_url: str, api_key: str, ratio: str = '1:1') -> dict:
