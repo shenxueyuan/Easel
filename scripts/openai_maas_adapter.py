@@ -68,6 +68,19 @@ class Handler(BaseHTTPRequestHandler):
             # 需要拼上 /chat/completions
             if endpoint and not endpoint.endswith("/chat/completions"):
                 endpoint = endpoint.rstrip("/") + "/chat/completions"
+
+            # 注入 max_tokens：百炼 deepseek-v4-flash 最大输出 393216，
+            # OpenClaw 默认 8192 会导致长回复被截断（stopReason=error）。
+            # 请求体未带或 ≤ 8192 时改大为 65536（足够覆盖 thinking + 回复）。
+            try:
+                body = json.loads(raw_body)
+                cur = body.get("max_tokens")
+                if cur is None or (isinstance(cur, int) and cur <= 8192):
+                    body["max_tokens"] = 65536
+                    raw_body = json.dumps(body, ensure_ascii=False).encode()
+            except (json.JSONDecodeError, TypeError):
+                pass  # 非 JSON 或解析失败，原样转发
+
             request = Request(
                 endpoint,
                 data=raw_body,
