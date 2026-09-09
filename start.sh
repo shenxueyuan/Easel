@@ -158,12 +158,44 @@ start_gateway() {
     warn "Gateway 可能未就绪，检查: $GATEWAY_LOG"
 }
 
+# ---- 检查并构建前端 ----
+# 比较源码与 dist 的时间戳，源码更新过则自动 build，避免 7860 加载旧静态资源
+build_frontend() {
+    local fe_dir="$PROJECT_ROOT/web/frontend"
+    local dist_dir="$fe_dir/dist"
+    if [ ! -d "$fe_dir" ]; then
+        warn "前端目录不存在: $fe_dir，跳过 build"
+        return 0
+    fi
+    # 找最新的源码文件时间戳（src 下 .ts/.tsx/.css）
+    local src_latest dist_latest
+    src_latest="$(find "$fe_dir/src" -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.css' \) -exec stat -f '%m' {} + 2>/dev/null | sort -rn | head -1)"
+    dist_latest="$(find "$dist_dir" -type f -exec stat -f '%m' {} + 2>/dev/null | sort -rn | head -1)"
+    if [ -n "$src_latest" ] && [ -n "$dist_latest" ] && [ "$src_latest" -le "$dist_latest" ]; then
+        ok "前端 dist 已是最新，跳过 build"
+        return 0
+    fi
+    if [ -z "$src_latest" ]; then
+        warn "未找到前端源码，跳过 build"
+        return 0
+    fi
+    info "检测到前端源码更新，开始 build..."
+    (cd "$fe_dir" && npx vite build > /tmp/easel-fe-build.log 2>&1)
+    if [ $? -ne 0 ]; then
+        fail "前端 build 失败，查看: /tmp/easel-fe-build.log"
+        tail -10 /tmp/easel-fe-build.log 2>/dev/null
+        return 1
+    fi
+    ok "前端 build 完成"
+}
+
 # ---- 启动 Web UI ----
 start_web() {
     if web_live; then
         ok "Web UI 已在运行 (端口 $WEB_PORT)"
         return 0
     fi
+    build_frontend || return 1
     info "启动 Web UI..."
     nohup "$PYTHON_BIN" -m uvicorn web.app:app --host 0.0.0.0 --port "$WEB_PORT" \
         > "$WEB_LOG" 2>&1 &

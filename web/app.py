@@ -2840,15 +2840,116 @@ async def api_bgm_delete(name: str):
 VOICES_DIR = LOCAL_OUTPUTS_DIR / '_shared' / 'voices'   # 克隆音色元数据 + 预览音频
 VOICES_META = VOICES_DIR / '_meta.json'                  # 克隆音色元数据
 
-# 百炼 CosyVoice 系统音色（免费，直接可用）
+# 百炼 CosyVoice-v2 系统音色（免费，直接可用，共 106 个，17 个场景分类）
+# 官方音色列表：https://help.aliyun.com/zh/model-studio/cosyvoice-voice-list
+# 每个模型仅支持一组特定音色，不能跨模型混用；当前 tts.py 默认 model=cosyvoice-v2
 SYSTEM_VOICES = [
-    {'voice_id': 'longxiaochun_v2', 'name': '龙小淳', 'desc': '知性积极女声', 'tags': '女声·知性', 'type': 'system'},
-    {'voice_id': 'longcheng_v2', 'name': '龙橙', 'desc': '阳光男声', 'tags': '男声·阳光', 'type': 'system'},
-    {'voice_id': 'longhua_v2', 'name': '龙华', 'desc': '活泼女声', 'tags': '女声·活泼', 'type': 'system'},
-    {'voice_id': 'longwan_v2', 'name': '龙婉', 'desc': '柔声女声', 'tags': '女声·温柔', 'type': 'system'},
-    {'voice_id': 'longshu_v2', 'name': '龙书', 'desc': '沉稳男声', 'tags': '男声·沉稳', 'type': 'system'},
-    {'voice_id': 'longyue_v2', 'name': '龙悦', 'desc': '甜美女声', 'tags': '女声·甜美', 'type': 'system'},
-    {'voice_id': 'longji_v2', 'name': '龙吉', 'desc': '少年男声', 'tags': '男声·少年', 'type': 'system'},
+    {'voice_id': 'longyingxiao', 'name': '龙应笑', 'trait': '清甜推销女', 'scene': '电话销售', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longjiqi', 'name': '龙机器', 'trait': '呆萌机器人', 'scene': '短视频配音', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longhouge', 'name': '龙猴哥', 'trait': '经典猴哥', 'scene': '短视频配音', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longjixin', 'name': '龙机心', 'trait': '毒舌心机女', 'scene': '短视频配音', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longanyue', 'name': '龙安粤', 'trait': '欢脱粤语男', 'scene': '短视频配音', 'language': '中文（粤语）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longshange', 'name': '龙陕哥', 'trait': '原味陕北男', 'scene': '短视频配音', 'language': '中文（陕西话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longanmin', 'name': '龙安敏', 'trait': '甜美闽南女', 'scene': '短视频配音', 'language': '中文（闽南话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longdaiyu', 'name': '龙黛玉', 'trait': '娇率才女音', 'scene': '短视频配音', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longgaoseng', 'name': '龙高僧', 'trait': '得道高僧音', 'scene': '短视频配音', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longanli', 'name': '龙安莉', 'trait': '利落从容女', 'scene': '语音助手', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longanlang', 'name': '龙安朗', 'trait': '清爽利落男', 'scene': '语音助手', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longanwen', 'name': '龙安温', 'trait': '优雅知性女', 'scene': '语音助手', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longanyun', 'name': '龙安昀', 'trait': '居家暖男', 'scene': '语音助手', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longyumi_v2', 'name': 'YUMI', 'trait': '正经青年女', 'scene': '语音助手', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longxiaochun_v2', 'name': '龙小淳', 'trait': '知性积极女', 'scene': '语音助手', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longxiaoxia_v2', 'name': '龙小夏', 'trait': '沉稳权威女', 'scene': '语音助手', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longyichen', 'name': '龙逸尘', 'trait': '洒脱活力男', 'scene': '有声书', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longwanjun', 'name': '龙婉君', 'trait': '细腻柔声女', 'scene': '有声书', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longlaobo', 'name': '龙老伯', 'trait': '沧桑岁月爷', 'scene': '有声书', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longlaoyi', 'name': '龙老姨', 'trait': '烟火从容阿姨', 'scene': '有声书', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longbaizhi', 'name': '龙白芷', 'trait': '睿气旁白女', 'scene': '有声书', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longsanshu', 'name': '龙三叔', 'trait': '沉稳质感男', 'scene': '有声书', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longxiu_v2', 'name': '龙修', 'trait': '博才说书男', 'scene': '有声书', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longmiao_v2', 'name': '龙妙', 'trait': '抑扬顿挫女', 'scene': '有声书', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longyue_v2', 'name': '龙悦', 'trait': '温暖磁性女', 'scene': '有声书', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longnan_v2', 'name': '龙楠', 'trait': '睿智青年男', 'scene': '有声书', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longyuan_v2', 'name': '龙媛', 'trait': '温暖治愈女', 'scene': '有声书', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longanqin', 'name': '龙安亲', 'trait': '亲和活泼女', 'scene': '社交陪伴', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longanya', 'name': '龙安雅', 'trait': '高雅气质女', 'scene': '社交陪伴', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longanshuo', 'name': '龙安朔', 'trait': '干净清爽男', 'scene': '社交陪伴', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longanling', 'name': '龙安灵', 'trait': '思维灵动女', 'scene': '社交陪伴', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longanzhi', 'name': '龙安智', 'trait': '睿智轻熟男', 'scene': '社交陪伴', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longanrou', 'name': '龙安柔', 'trait': '温柔闺蜜女', 'scene': '社交陪伴', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longqiang_v2', 'name': '龙嫱', 'trait': '浪漫风情女', 'scene': '社交陪伴', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longhan_v2', 'name': '龙寒', 'trait': '温暖痴情男', 'scene': '社交陪伴', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longxing_v2', 'name': '龙星', 'trait': '温婉邻家女', 'scene': '社交陪伴', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longhua_v2', 'name': '龙华', 'trait': '元气甜美女', 'scene': '社交陪伴', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longwan_v2', 'name': '龙婉', 'trait': '积极知性女', 'scene': '社交陪伴', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longcheng_v2', 'name': '龙橙', 'trait': '智慧青年男', 'scene': '社交陪伴', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longfeifei_v2', 'name': '龙菲菲', 'trait': '甜美娇气女', 'scene': '社交陪伴', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longxiaocheng_v2', 'name': '龙小诚', 'trait': '磁性低音男', 'scene': '社交陪伴', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longzhe_v2', 'name': '龙哲', 'trait': '呆板大暖男', 'scene': '社交陪伴', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longyan_v2', 'name': '龙颜', 'trait': '温暖春风女', 'scene': '社交陪伴', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longtian_v2', 'name': '龙天', 'trait': '磁性理智男', 'scene': '社交陪伴', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longze_v2', 'name': '龙泽', 'trait': '温暖元气男', 'scene': '社交陪伴', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longshao_v2', 'name': '龙邵', 'trait': '积极向上男', 'scene': '社交陪伴', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longhao_v2', 'name': '龙浩', 'trait': '多情忧郁男', 'scene': '社交陪伴', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'kabuleshen_v2', 'name': '龙深', 'trait': '实力歌手男', 'scene': '社交陪伴', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longhuhu', 'name': '龙呼呼', 'trait': '天真烂漫女童', 'scene': '童声（标杆音色）', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longanpei', 'name': '龙安培', 'trait': '青少年教师女', 'scene': '消费电子-教育培训', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longwangwang', 'name': '龙汪汪', 'trait': '台湾少年音', 'scene': '消费电子-儿童陪伴', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longpaopao', 'name': '龙泡泡', 'trait': '飞天泡泡音', 'scene': '消费电子-儿童有声书', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longshanshan', 'name': '龙闪闪', 'trait': '戏剧化童声', 'scene': '消费电子-儿童有声书', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longniuniu', 'name': '龙牛牛', 'trait': '阳光男童声', 'scene': '消费电子-儿童有声书', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longyingmu', 'name': '龙应沐', 'trait': '优雅知性女', 'scene': '客服', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longyingxun', 'name': '龙应询', 'trait': '年轻青涩男', 'scene': '客服', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longyingcui', 'name': '龙应催', 'trait': '严肃催收男', 'scene': '客服', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longyingda', 'name': '龙应答', 'trait': '开朗高音女', 'scene': '客服', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longyingjing', 'name': '龙应静', 'trait': '低调冷静女', 'scene': '客服', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longyingyan', 'name': '龙应严', 'trait': '义正严辞女', 'scene': '客服', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longyingtian', 'name': '龙应甜', 'trait': '温柔甜美女', 'scene': '客服', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longyingbing', 'name': '龙应冰', 'trait': '尖锐强势女', 'scene': '客服', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longyingtao', 'name': '龙应桃', 'trait': '温柔淡定女', 'scene': '客服', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longyingling', 'name': '龙应聆', 'trait': '温和共情女', 'scene': '客服', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longanran', 'name': '龙安燃', 'trait': '活泼质感女', 'scene': '直播带货', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longanxuan', 'name': '龙安宣', 'trait': '经典直播女', 'scene': '直播带货', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longanchong', 'name': '龙安冲', 'trait': '激情推销男', 'scene': '直播带货', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longanping', 'name': '龙安萍', 'trait': '高亢直播女', 'scene': '直播带货', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longjielidou_v2', 'name': '龙杰力豆', 'trait': '阳光顽皮男', 'scene': '童声', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longling_v2', 'name': '龙铃', 'trait': '稚气呆板女', 'scene': '童声', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longke_v2', 'name': '龙可', 'trait': '懵懂乖乖女', 'scene': '童声', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longxian_v2', 'name': '龙仙', 'trait': '豪放可爱女', 'scene': '童声', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longlaotie_v2', 'name': '龙老铁', 'trait': '东北直率男', 'scene': '方言', 'language': '中文（东北话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longjiayi_v2', 'name': '龙嘉怡', 'trait': '知性粤语女', 'scene': '方言', 'language': '中文（粤语）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longtao_v2', 'name': '龙桃', 'trait': '积极粤语女', 'scene': '方言', 'language': '中文（粤语）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longfei_v2', 'name': '龙飞', 'trait': '热血磁性男', 'scene': '诗词朗诵', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'libai_v2', 'name': '李白', 'trait': '古代诗仙男', 'scene': '诗词朗诵', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longjin_v2', 'name': '龙津', 'trait': '优雅温润男', 'scene': '诗词朗诵', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longshu_v2', 'name': '龙书', 'trait': '沉稳青年男', 'scene': '新闻播报', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'loongbella_v2', 'name': 'Bella2.0', 'trait': '精准干练女', 'scene': '新闻播报', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longshuo_v2', 'name': '龙硕', 'trait': '博才干练男', 'scene': '新闻播报', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longxiaobai_v2', 'name': '龙小白', 'trait': '沉稳播报女', 'scene': '新闻播报', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'longjing_v2', 'name': '龙婧', 'trait': '典型播音女', 'scene': '新闻播报', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'loongstella_v2', 'name': 'loongstella', 'trait': '飒爽利落女', 'scene': '新闻播报', 'language': '中文（普通话）、英文', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '支持', 'type': 'system'},
+    {'voice_id': 'loongyuuna_v2', 'name': 'loongyuuna', 'trait': '元气霓虹女', 'scene': '出海营销', 'language': '日语', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '不支持', 'type': 'system'},
+    {'voice_id': 'loongyuuma_v2', 'name': 'loongyuuma', 'trait': '干练霓虹男', 'scene': '出海营销', 'language': '日语', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '不支持', 'type': 'system'},
+    {'voice_id': 'loongjihun_v2', 'name': 'loongjihun', 'trait': '阳光韩国男', 'scene': '出海营销', 'language': '韩语', 'ssml': '支持', 'instruct': '不支持', 'timestamp': '不支持', 'type': 'system'},
+    {'voice_id': 'loongeva_v2', 'name': 'loongeva', 'trait': '知性英文女', 'scene': '出海营销', 'language': '英式英文', 'ssml': '不支持', 'instruct': '不支持', 'timestamp': '不支持', 'type': 'system'},
+    {'voice_id': 'loongbrian_v2', 'name': 'loongbrian', 'trait': '沉稳英文男', 'scene': '出海营销', 'language': '英式英文', 'ssml': '不支持', 'instruct': '不支持', 'timestamp': '不支持', 'type': 'system'},
+    {'voice_id': 'loongluna_v2', 'name': 'loongluna', 'trait': '英式英文女', 'scene': '出海营销', 'language': '英式英文', 'ssml': '不支持', 'instruct': '不支持', 'timestamp': '不支持', 'type': 'system'},
+    {'voice_id': 'loongluca_v2', 'name': 'loongluca', 'trait': '英式英文男', 'scene': '出海营销', 'language': '英式英文', 'ssml': '不支持', 'instruct': '不支持', 'timestamp': '不支持', 'type': 'system'},
+    {'voice_id': 'loongemily_v2', 'name': 'loongemily', 'trait': '英式英文女', 'scene': '出海营销', 'language': '英式英文', 'ssml': '不支持', 'instruct': '不支持', 'timestamp': '不支持', 'type': 'system'},
+    {'voice_id': 'loongeric_v2', 'name': 'loongeric', 'trait': '英式英文男', 'scene': '出海营销', 'language': '英式英文', 'ssml': '不支持', 'instruct': '不支持', 'timestamp': '不支持', 'type': 'system'},
+    {'voice_id': 'loongabby_v2', 'name': 'loongabby', 'trait': '美式英文女', 'scene': '出海营销', 'language': '美式英文', 'ssml': '不支持', 'instruct': '不支持', 'timestamp': '不支持', 'type': 'system'},
+    {'voice_id': 'loongannie_v2', 'name': 'loongannie', 'trait': '美式英文女', 'scene': '出海营销', 'language': '美式英文', 'ssml': '不支持', 'instruct': '不支持', 'timestamp': '不支持', 'type': 'system'},
+    {'voice_id': 'loongandy_v2', 'name': 'loongandy', 'trait': '美式英文男', 'scene': '出海营销', 'language': '美式英文', 'ssml': '不支持', 'instruct': '不支持', 'timestamp': '不支持', 'type': 'system'},
+    {'voice_id': 'loongava_v2', 'name': 'loongava', 'trait': '美式英文女', 'scene': '出海营销', 'language': '美式英文', 'ssml': '不支持', 'instruct': '不支持', 'timestamp': '不支持', 'type': 'system'},
+    {'voice_id': 'loongbeth_v2', 'name': 'loongbeth', 'trait': '美式英文女', 'scene': '出海营销', 'language': '美式英文', 'ssml': '不支持', 'instruct': '不支持', 'timestamp': '不支持', 'type': 'system'},
+    {'voice_id': 'loongbetty_v2', 'name': 'loongbetty', 'trait': '美式英文女', 'scene': '出海营销', 'language': '美式英文', 'ssml': '不支持', 'instruct': '不支持', 'timestamp': '不支持', 'type': 'system'},
+    {'voice_id': 'loongcindy_v2', 'name': 'loongcindy', 'trait': '美式英文女', 'scene': '出海营销', 'language': '美式英文', 'ssml': '不支持', 'instruct': '不支持', 'timestamp': '不支持', 'type': 'system'},
+    {'voice_id': 'loongcally_v2', 'name': 'loongcally', 'trait': '美式英文女', 'scene': '出海营销', 'language': '美式英文', 'ssml': '不支持', 'instruct': '不支持', 'timestamp': '不支持', 'type': 'system'},
+    {'voice_id': 'loongdavid_v2', 'name': 'loongdavid', 'trait': '美式英文男', 'scene': '出海营销', 'language': '美式英文', 'ssml': '不支持', 'instruct': '不支持', 'timestamp': '不支持', 'type': 'system'},
+    {'voice_id': 'loongdonna_v2', 'name': 'loongdonna', 'trait': '美式英文女', 'scene': '出海营销', 'language': '美式英文', 'ssml': '不支持', 'instruct': '不支持', 'timestamp': '不支持', 'type': 'system'},
+    {'voice_id': 'loongkyong_v2', 'name': 'loongkyong', 'trait': '韩语女', 'scene': '出海营销', 'language': '韩语', 'ssml': '不支持', 'instruct': '不支持', 'timestamp': '不支持', 'type': 'system'},
+    {'voice_id': 'loongtomoka_v2', 'name': 'loongtomoka', 'trait': '日语女', 'scene': '出海营销', 'language': '日语', 'ssml': '不支持', 'instruct': '不支持', 'timestamp': '不支持', 'type': 'system'},
+    {'voice_id': 'loongtomoya_v2', 'name': 'loongtomoya', 'trait': '日语男', 'scene': '出海营销', 'language': '日语', 'ssml': '不支持', 'instruct': '不支持', 'timestamp': '不支持', 'type': 'system'},
 ]
 
 PREVIEW_TEXT = '大家好，欢迎来到我的频道，今天和大家分享一个有趣的话题。'
@@ -2928,21 +3029,54 @@ async def api_voices_list():
             'status': status,
             'preview_url': f'/api/voices/preview/{vid}',
         })
-    return {'voices': voices, 'default': NARRATION_VOICE}
+    return {'voices': voices, 'default': _get_default_voice()}
+
+
+class SetDefaultVoiceRequest(BaseModel):
+    voice_id: str
+
+
+@app.post("/api/voices/default")
+async def api_voices_set_default(req: SetDefaultVoiceRequest):
+    """设置默认音色（视频生成时使用）。voice_id 必须在系统或克隆音色列表中。"""
+    voice_id = (req.voice_id or '').strip()
+    if not voice_id:
+        raise HTTPException(400, 'voice_id 不能为空')
+    # 校验音色存在
+    all_voices = list(SYSTEM_VOICES)
+    local_meta = _voices_meta()
+    all_voices.extend([{'voice_id': vid} for vid in local_meta.keys()])
+    if not any(v['voice_id'] == voice_id for v in all_voices):
+        raise HTTPException(404, f'音色不存在: {voice_id}')
+    _set_default_voice(voice_id)
+    return {'ok': True, 'default': voice_id}
 
 
 @app.get("/api/voices/preview/{voice_id}")
 async def api_voices_preview(voice_id: str):
-    """生成或返回音色预览音频（3 秒试听）。懒生成 + 缓存到 _shared/voices/preview/。"""
+    """返回音色预览音频。
+
+    克隆音色：直接播放用户上传的原始样本音频（不调 TTS）。
+    系统音色：首次调 TTS 生成预览并缓存到 _shared/voices/preview/，后续直接返回缓存。
+    """
     VOICES_DIR.mkdir(parents=True, exist_ok=True)
+
+    # 克隆音色：直接返回本地样本文件
+    local_meta = _voices_meta()
+    if voice_id in local_meta:
+        sample_rel = local_meta[voice_id].get('sample_file', '')
+        if sample_rel:
+            sample_path = (LOCAL_OUTPUTS_DIR / sample_rel).resolve()
+            if sample_path.is_file():
+                return FileResponse(str(sample_path), media_type='audio/mpeg')
+
+    # 系统音色：懒生成 + 缓存
     preview_dir = VOICES_DIR / 'preview'
     preview_dir.mkdir(parents=True, exist_ok=True)
-    # voice_id 可能含斜杠（克隆音色如 cosyvoice-v2-myvoice-xxx），用 hash 做文件名
     safe_name = hashlib.sha256(voice_id.encode()).hexdigest()[:16]
     preview_path = preview_dir / f'{safe_name}.mp3'
     if preview_path.is_file() and preview_path.stat().st_size > 0:
         return FileResponse(str(preview_path), media_type='audio/mpeg')
-    # 生成预览
     text_file = preview_dir / f'{safe_name}.txt'
     text_file.write_text(PREVIEW_TEXT, encoding='utf-8')
     cmd = [sys.executable, str(SHARED_SCRIPTS / 'tts.py'), 'speak',
@@ -2998,31 +3132,23 @@ async def api_voices_clone(file: UploadFile = File(...), name: str = Form(...)):
 
     base_url = os.environ.get('DASHSCOPE_BASE_URL', 'https://dashscope.aliyuncs.com').rstrip('/')
 
-    # 百炼需要公网 URL；先用 file upload API 上传音频
+    # 百炼需要公网可访问 URL；用 dashscope SDK 上传文件并获取签名 URL
     try:
-        # 方式1：用百炼文件上传 API 获取临时 URL
-        upload_url = base_url + '/api/v1/uploads'
-        # 构造 multipart 上传
-        boundary = '----EaselBoundary' + safe_name
-        body = (
-            f'--{boundary}\r\n'
-            f'Content-Disposition: form-data; name="file"; filename="{sample_path.name}"\r\n'
-            f'Content-Type: application/octet-stream\r\n\r\n'
-        ).encode() + audio_data + f'\r\n--{boundary}--\r\n'.encode()
-        upload_req = Request(upload_url, data=body,
-                             headers={
-                                 'Authorization': f'Bearer {api_key}',
-                                 'Content-Type': f'multipart/form-data; boundary={boundary}',
-                             }, method='POST')
-        with urlopen(upload_req, timeout=30) as resp:
-            upload_result = json.loads(resp.read())
-        sample_url = upload_result.get('output', {}).get('uploaded_url', '')
+        import dashscope
+        dashscope.api_key = api_key
+        # 上传音频文件到百炼
+        upload_resp = dashscope.Files.upload(
+            file_path=str(sample_path),
+            purpose='file-extract',
+        )
+        file_id = upload_resp.output['uploaded_files'][0]['file_id']
+        # 获取带签名的公网下载 URL
+        file_resp = dashscope.Files.get(file_id=file_id)
+        sample_url = file_resp.output.get('url', '')
         if not sample_url:
-            # 方式2：用 file:// 协议（仅限百炼同 region 部署时）
-            raise RuntimeError('百炼文件上传失败，未获取到音频 URL')
-    except HTTPError as e:
-        detail = e.read().decode()[:300] if hasattr(e, 'read') else str(e)
-        raise HTTPException(502, f'百炼文件上传失败: {detail}')
+            raise RuntimeError('百炼文件上传成功但未返回下载 URL')
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(502, f'音频上传失败: {e}')
 
@@ -3246,22 +3372,56 @@ def _emo_query_task(task_id: str, api_key: str) -> dict:
 
 
 @app.post("/api/digital-human/generate")
-async def api_digital_human_generate(image: str = Form(...), audio: str = Form(...),
-                                     pos: str = Form('bottom-right')):
+async def api_digital_human_generate(
+    pos: str = Form('bottom-right'),
+    image: str = Form(''),
+    audio: str = Form(''),
+    image_file: UploadFile | None = File(None),
+    audio_file: UploadFile | None = File(None),
+):
     """启动数字人生成任务（百炼 EMO）。
 
-    image/audio 是 outputs/ 下的相对路径，后端上传到百炼后调 EMO。
+    支持两种输入方式：
+    1. 上传文件：image_file/audio_file（File 对象），后端保存到 outputs/_shared/digital-human/uploads/
+    2. 引用 outputs 相对路径：image/audio（字符串，兼容旧接口）
+
     返回 task_key 用于轮询状态。
     """
     api_key = _bailian_api_key()
     if not api_key:
         raise HTTPException(500, 'DASHSCOPE_API_KEY 未配置')
-    img_path = _safe_output_path(image)
-    audio_path = _safe_output_path(audio)
+
+    # 解析图片：优先上传文件，否则用 outputs 相对路径
+    upload_dir = OUTPUTS_DIR.resolve() / '_shared' / 'digital-human' / 'uploads'
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    img_rel = ''
+    audio_rel = ''
+    if image_file is not None and image_file.filename:
+        suffix = Path(image_file.filename).suffix.lower() or '.jpg'
+        img_path = upload_dir / f'img_{int(time.time()*1000)}{suffix}'
+        img_path.write_bytes(await image_file.read())
+        img_rel = str(img_path.relative_to(OUTPUTS_DIR.resolve()))
+    elif image:
+        img_rel = image
+    else:
+        raise HTTPException(400, '请上传人像照片或选择已有图片')
+
+    if audio_file is not None and audio_file.filename:
+        suffix = Path(audio_file.filename).suffix.lower() or '.mp3'
+        audio_path = upload_dir / f'aud_{int(time.time()*1000)}{suffix}'
+        audio_path.write_bytes(await audio_file.read())
+        audio_rel = str(audio_path.relative_to(OUTPUTS_DIR.resolve()))
+    elif audio:
+        audio_rel = audio
+    else:
+        raise HTTPException(400, '请上传音频文件或选择已有音频')
+
+    img_path = _safe_output_path(img_rel)
+    audio_path = _safe_output_path(audio_rel)
     if not img_path.is_file():
-        raise HTTPException(404, f'图片不存在: {image}')
+        raise HTTPException(404, f'图片不存在: {img_rel}')
     if not audio_path.is_file():
-        raise HTTPException(404, f'音频不存在: {audio}')
+        raise HTTPException(404, f'音频不存在: {audio_rel}')
     # 上传到百炼
     try:
         image_url = _upload_to_bailian(img_path, api_key)
@@ -3281,8 +3441,8 @@ async def api_digital_human_generate(image: str = Form(...), audio: str = Form(.
     EMO_TASKS[task_key] = {
         'task_id': task_id,
         'status': 'PENDING',
-        'image': image,
-        'audio': audio,
+        'image': img_rel,
+        'audio': audio_rel,
         'pos': pos,
         'video_path': '',
         'created_at': time.strftime('%Y-%m-%d %H:%M:%S'),
@@ -3340,7 +3500,26 @@ def _split_captions(body: str, n: int) -> list[str]:
 
 
 # 图文转视频默认配音音色（阿里云百炼 CosyVoice 系统音色，走闭源好嗓子）
-NARRATION_VOICE = 'longxiaochun_v2'  # 龙小淳 · 知性积极女声，适合口播/讲解
+NARRATION_VOICE_FALLBACK = 'longxiaochun_v2'  # 龙小淳 · 知性积极女声，适合口播/讲解
+DEFAULT_VOICE_FILE = VOICES_DIR / '_default_voice.txt'  # 用户自定义默认音色
+
+
+def _get_default_voice() -> str:
+    """读取用户设置的默认音色；未设置则返回回退值。"""
+    try:
+        if DEFAULT_VOICE_FILE.is_file():
+            vid = DEFAULT_VOICE_FILE.read_text(encoding='utf-8').strip()
+            if vid:
+                return vid
+    except Exception:
+        pass
+    return NARRATION_VOICE_FALLBACK
+
+
+def _set_default_voice(voice_id: str) -> None:
+    """持久化默认音色到本地文件。"""
+    VOICES_DIR.mkdir(parents=True, exist_ok=True)
+    DEFAULT_VOICE_FILE.write_text(voice_id, encoding='utf-8')
 
 
 def _llm_rewrite_narration(title: str, body: str, n_shots: int, out_dir: Path) -> list[str] | None:
@@ -3550,7 +3729,7 @@ def _generate_publish_video(job_id: str, req: PublishJobRequest) -> dict:
     if not images:
         return {'status': 'fail', 'message': '没有可用于生成视频的图片', 'verified': False}
     # 音色：Job 请求指定 > 默认
-    narration_voice = req.voice.strip() if req.voice and req.voice.strip() else NARRATION_VOICE
+    narration_voice = req.voice.strip() if req.voice and req.voice.strip() else _get_default_voice()
     fingerprint = hashlib.sha256((req.title + '|' + '|'.join(str(p) for p in images)
                                  + '|' + narration_voice).encode('utf-8')).hexdigest()[:12]
     output_root = OUTPUTS_DIR.resolve()

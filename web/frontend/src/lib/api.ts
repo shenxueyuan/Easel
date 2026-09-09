@@ -667,22 +667,42 @@ export function deleteBgm(name: string): Promise<{ ok: boolean }> {
 export interface VoiceItem {
   voice_id: string;
   name: string;
-  desc: string;
-  tags: string;
+  desc?: string;
+  tags?: string;
   type: 'system' | 'clone';
   status?: string;
   preview_url?: string;
+  // 官网完整字段（system 音色）
+  scene?: string;
+  trait?: string;
+  language?: string;
+  ssml?: string;
+  instruct?: string;
+  timestamp?: string;
 }
 
 export function fetchVoices(): Promise<{ voices: VoiceItem[]; default: string }> {
   return request('/api/voices');
 }
 
-export function cloneVoice(file: File, name: string): Promise<{ ok: boolean; voice_id: string; name: string; status: string }> {
+export async function cloneVoice(file: File, name: string): Promise<{ ok: boolean; voice_id: string; name: string; status: string }> {
   const fd = new FormData();
   fd.append('file', file);
   fd.append('name', name);
-  return fetch('/api/voices/clone', { method: 'POST', body: fd }).then((r) => r.json());
+  const resp = await fetch('/api/voices/clone', { method: 'POST', body: fd });
+  const data = await resp.json();
+  if (!resp.ok || !data.voice_id) {
+    throw new Error(data.detail || data.message || `克隆失败 (HTTP ${resp.status})`);
+  }
+  return data;
+}
+
+export function setDefaultVoice(voiceId: string): Promise<{ ok: boolean; default: string }> {
+  return request('/api/voices/default', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ voice_id: voiceId }),
+  });
 }
 
 export function queryCloneStatus(voiceId: string): Promise<{ voice_id: string; status: string; message?: string }> {
@@ -695,11 +715,15 @@ export function deleteCloneVoice(voiceId: string): Promise<{ ok: boolean }> {
 
 // ── 数字人（百炼 EMO）─────────────────────────────────────
 
-export function generateDigitalHuman(image: string, audio: string, pos: string): Promise<{ ok: boolean; task_key: string; task_id: string; status: string }> {
+export function generateDigitalHuman(
+  imageFile: File | null,
+  audioFile: File | null,
+  pos: string,
+): Promise<{ ok: boolean; task_key: string; task_id: string; status: string }> {
   const fd = new FormData();
-  fd.append('image', image);
-  fd.append('audio', audio);
   fd.append('pos', pos);
+  if (imageFile) fd.append('image_file', imageFile);
+  if (audioFile) fd.append('audio_file', audioFile);
   return fetch('/api/digital-human/generate', { method: 'POST', body: fd }).then((r) => r.json());
 }
 
