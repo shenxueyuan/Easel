@@ -3218,6 +3218,10 @@ def _run_job(job_id: str, req: PublishJobRequest) -> None:
     orig_media = list(req.media or [])
     req_orig = req.model_copy(update={'media': orig_media})
 
+    # 本次请求自带的视频（生成任务开始前快照）：VIDEO_ONLY/抖音 平台没有它就得等生成结果
+    # 快照必须在 media_thread 启动前取，避免竞态（media task 完成后 req.media 已追加视频）
+    _, req_videos = _publish_media(req)
+
     # 视频版生成：有媒体任务则在独立线程立即并行开跑
     media_thread = None
     if media_tasks and not _JOB_CANCEL_FLAG.get(job_id):
@@ -3238,9 +3242,6 @@ def _run_job(job_id: str, req: PublishJobRequest) -> None:
             t['message'] = '已停止'
             t['finished_at'] = time.time()
         save()
-
-    # 本次请求自带的视频（生成任务开始前快照）：VIDEO_ONLY 平台没有它就得等生成结果
-    _, req_videos = _publish_media(req)
 
     for task in other_tasks:
         if _JOB_CANCEL_FLAG.get(job_id):
