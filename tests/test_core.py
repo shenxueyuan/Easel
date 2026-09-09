@@ -364,6 +364,45 @@ def test_chat_route_is_registered_to_handler_not_request_model():
     assert route.endpoint is web.api_chat
 
 
+def test_publish_job_route_does_not_match_native_platform_route():
+    from starlette.routing import Match
+
+    scope = {"type": "http", "path": "/api/publish/jobs", "method": "POST"}
+    route = next(route for route in web.app.routes if route.matches(scope)[0] is Match.FULL)
+
+    assert route.endpoint is web.api_create_publish_job
+
+
+def test_video_bgm_only_uses_matching_tagged_track(tmp_path, monkeypatch):
+    track = tmp_path / "promo.mp3"
+    track.write_bytes(b"audio")
+    monkeypatch.setattr(web, "_bgm_tracks", lambda: [track])
+    monkeypatch.setattr(web, "_bgm_meta", lambda: {"promo.mp3": {"style": "ecom"}})
+
+    assert web._video_bgm("商品上新优惠", "限时促销") == track
+    assert web._video_bgm("一篇普通文章", "没有匹配的内容类型") is None
+
+
+def test_video_bgm_falls_back_to_related_style(tmp_path, monkeypatch):
+    """主风格无曲目时按 BGM_FALLBACK 降级到相近风格，避免科技类内容静音。"""
+    corp = tmp_path / "corp.mp3"
+    corp.write_bytes(b"audio")
+    monkeypatch.setattr(web, "_bgm_tracks", lambda: [corp])
+    # 曲库只有 corporate，但内容是科技/AI → 应回退到 corporate
+    monkeypatch.setattr(web, "_bgm_meta", lambda: {"corp.mp3": {"style": "corporate"}})
+    assert web._video_bgm("GPT-6发布，AI时代来了", "人工智能") == corp
+
+
+def test_split_captions_distributes_sentences():
+    body = "第一句。第二句。第三句。第四句。第五句。"
+    caps = web._split_captions(body, 3)
+    assert len(caps) == 3
+    assert all(caps)  # 每段非空
+    # 句子少于图片数：多余图片空 caption
+    caps2 = web._split_captions("只有一句", 3)
+    assert caps2 == ["只有一句", "", ""]
+
+
 # ---- Web: 基线画像生成 ----
 
 def test_write_baseline_profile(tmp_path, monkeypatch):

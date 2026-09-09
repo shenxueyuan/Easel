@@ -7,19 +7,29 @@ function getBasePath(): string {
 const BASE = getBasePath();
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${url}`, options);
-  if (!res.ok) {
-    // 优先显示后端返回的实质错误信息（FastAPI 的 {detail}），而不是无意义的 "API error: 400"
-    let detail = '';
+  const attempts = !options?.method || options.method === 'GET' ? 2 : 1;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      const j = await res.json();
-      detail = (j && (j.detail || j.message)) || '';
-    } catch {
-      /* 响应体不是 JSON，忽略 */
+      const res = await fetch(`${BASE}${url}`, { cache: 'no-store', ...options });
+      if (!res.ok) {
+        // 优先显示后端返回的实质错误信息（FastAPI 的 {detail}），而不是无意义的 "API error: 400"
+        let detail = '';
+        try {
+          const j = await res.json();
+          detail = (j && (j.detail || j.message)) || '';
+        } catch {
+          /* 响应体不是 JSON，忽略 */
+        }
+        throw new Error(detail || `请求失败（${res.status} ${res.statusText}）`);
+      }
+      return res.json() as Promise<T>;
+    } catch (error) {
+      lastError = error;
+      if (attempt + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, 350));
     }
-    throw new Error(detail || `请求失败（${res.status} ${res.statusText}）`);
   }
-  return res.json() as Promise<T>;
+  throw lastError instanceof Error ? lastError : new Error('网络请求失败');
 }
 
 export interface StatusResponse {
@@ -316,6 +326,9 @@ export interface AccountItem {
   backend: string;      // xhs | web | biliup | unsupported
   supported: boolean;
   loggedIn: boolean;
+  loginState?: string;    // never | expired | error | success | 进行中状态
+  loginReason?: string;   // 未登录时的原因文案（未登录过 / 已过期 / 登录失败…）
+  loginTs?: number;       // 最近一次登录成功/状态更新时间戳（秒）
   note: string;
 }
 
@@ -407,12 +420,23 @@ export interface WechatsyncStatus {
   token_configured: boolean;
   token_masked: string;
   skill_installed: boolean;
-  extension_connected: boolean;
+  extension_connected: boolean | null;
   ready: boolean;
 }
 
 export function checkWechatsync(): Promise<WechatsyncStatus> {
   return request<WechatsyncStatus>('/api/wechatsync/check');
+}
+
+export interface WechatsyncPlatform {
+  id: string;
+  name: string;
+  loggedIn: boolean;
+  username: string;
+}
+
+export function fetchWechatsyncPlatforms(): Promise<{ platforms: WechatsyncPlatform[]; raw: string }> {
+  return request('/api/wechatsync/platforms');
 }
 
 export function installWechatsyncCli(action: 'install' | 'uninstall' = 'install'): Promise<{
@@ -469,6 +493,29 @@ export function wechatsyncSync(data: {
   });
 }
 
+/** 主动探测扩展连接（起短命 CLI 进程，~8-15s）。 */
+export function wechatsyncPing(): Promise<{ connected: boolean; authenticated: boolean; message: string; output?: string }> {
+  return request('/api/wechatsync/ping', { method: 'POST' });
+}
+
+export interface ResolvedPublishDraft {
+  title: string;
+  body: string;
+  platforms: string[];
+  overrides: Record<string, string>;
+  tags: string;
+  media: string[];
+  source?: string;
+}
+
+export function resolvePublishDraft(context: string, sessionId: string, since: number): Promise<ResolvedPublishDraft> {
+  return request<ResolvedPublishDraft>('/api/publish/draft/resolve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ context, session_id: sessionId, since }),
+  });
+}
+
 export interface PublishResult {
   ok?: boolean;
   message: string;
@@ -483,7 +530,7 @@ export function publishNow(
   platform: string,
   payload: { title: string; body: string; media: string[]; tags?: string },
 ): Promise<PublishResult> {
-  return request<PublishResult>(`/api/publish/${encodeURIComponent(platform)}`, {
+  return request<PublishResult>(`/api/publish/native/${encodeURIComponent(platform)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -508,6 +555,108 @@ export function submitPublishSms(platform: string, code: string): Promise<{ ok: 
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ code }),
   });
+}
+
+// ============================================================
+// 异步发布 Job 系统（多平台串行 + 状态持久化 + 刷新恢复）
+// ============================================================
+
+export interface PublishJobTask {
+  platform: string;
+  label: string;
+  type: 'native' | 'wechatsync' | 'media';
+  status: 'pending' | 'preparing' | 'connecting' | 'publishing' | 'sms_required' | 'verifying' | 'submitted' | 'verified' | 'ok' | 'fail' | 'timeout' | 'cancelled' | 'skipped';
+  message: string;
+  started_at: number | null;
+  finished_at: number | null;
+  attempt?: number;
+  returncode?: number | null;
+  stdout?: string;
+  stderr?: string;
+  verified?: boolean;
+  draft_id?: string;
+  draft_url?: string;
+  media_path?: string;
+}
+
+export interface PublishJob {
+  id: string;
+  created_at: number;
+  updated_at: number;
+  status: 'running' | 'done' | 'cancelled' | 'cancelling';
+  title: string;
+  tasks: PublishJobTask[];
+}
+
+/** 创建异步发布 Job（后台串行执行各平台）。 */
+export function createPublishJob(data: {
+  title: string;
+  body: string;
+  tags: string;
+  media: string[];
+  platform_contents: Record<string, string>;
+  native_platforms: string[];
+  wechatsync_platforms: string[];
+}): Promise<PublishJob> {
+  return request<PublishJob>('/api/publish/jobs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+}
+
+/** 查询单个 Job 状态。 */
+export function getPublishJob(jobId: string): Promise<PublishJob> {
+  return request<PublishJob>(`/api/publish/jobs/${encodeURIComponent(jobId)}`);
+}
+
+/** 列出所有 Job（用于页面刷新后恢复进度）。 */
+export function listPublishJobs(): Promise<PublishJob[]> {
+  return request<PublishJob[]>('/api/publish/jobs');
+}
+
+/** 取消 Job（后台线程在下一个平台前停止）。 */
+export function cancelPublishJob(jobId: string): Promise<{ ok: boolean }> {
+  return request(`/api/publish/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+}
+
+// ── BGM 曲库 ──────────────────────────────────────────────
+
+export interface BgmTrack {
+  name: string;
+  path: string;
+  size: number;
+  source: string;   // 曲库 | AI 音乐
+  style: string;    // 风格 key：corporate/ecom/viral/light/emotional/tech/other，空=未标记
+  url: string;
+}
+
+export function fetchBgmTracks(): Promise<{ tracks: BgmTrack[]; styles: Record<string, string> }> {
+  return request('/api/bgm');
+}
+
+export async function uploadBgm(file: File, style = ''): Promise<{ ok: boolean; name: string; path: string }> {
+  const fd = new FormData();
+  fd.append('file', file);
+  if (style) fd.append('style', style);
+  const res = await fetch('/api/bgm', { method: 'POST', body: fd });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.detail || `上传失败（${res.status}）`);
+  }
+  return res.json();
+}
+
+export function updateBgmStyle(name: string, style: string): Promise<{ ok: boolean }> {
+  return request(`/api/bgm/${encodeURIComponent(name)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ style }),
+  });
+}
+
+export function deleteBgm(name: string): Promise<{ ok: boolean }> {
+  return request(`/api/bgm/${encodeURIComponent(name)}`, { method: 'DELETE' });
 }
 
 export function startLogin(platform: string): Promise<LoginStart> {

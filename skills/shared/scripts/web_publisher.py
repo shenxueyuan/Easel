@@ -224,6 +224,8 @@ PLATFORMS: dict[str, dict] = {
         "profile": "ZhihuProfile",
         "login_check": ".AppHeader-profile, .AppHeader-userInfo",
         "logged_out_selector": ".SignContainer, .Login-content, button:has-text('登录')",
+        "login_qr_selector": ".Qrcode-qrcode",
+        "qr_loaded": ".Qrcode-qrcode",
         "me_name_selector": ".AppHeader-profile .name, .ProfileHeader-name, .AppHeader-userInfo .name",
         "me_avatar_selector": ".AppHeader-profile img[src], .Avatar[src]",
         "steps": [
@@ -726,6 +728,10 @@ VIDEO_EXTS = {".mp4", ".mov", ".flv", ".mkv", ".avi", ".webm", ".m4v", ".wmv", "
 _LOGIN_POLL_MS = 1000
 _LOGIN_PROBE_EVERY = 3
 
+# Web 端登录改用「有头独立浏览器窗口」的平台：窗口里直接操作（扫码/快捷登录/输密码），
+# 不再依赖往前端弹窗塞截图（知乎二维码在页面里很小，抠图体验差；视频号需点微信快捷登录）。
+_HEADED_LOGIN_PLATFORMS = {"weixin-channels", "zhihu"}
+
 
 def _is_logged_in(page, cfg: dict) -> bool:
     """判断是否已登录，可靠性顺序：URL 落在登录页 → 登出浮层可见 → 强选择器命中 → URL 启发式兜底。
@@ -939,9 +945,20 @@ def _capture_qr(page, qr_out, cfg) -> None:
             for fr in page.frames:
                 if fr != page.main_frame and "qrconnect" in (fr.url or ""):
                     try:
-                        fr.wait_for_selector(
-                            "img.js_qrcode_img, img.web_qrcode_img, img[src*='/connect/qrcode/']",
-                            timeout=10000, state="attached")
+                        switch = fr.get_by_text("使用其他头像、昵称或账号", exact=False)
+                        if switch.count() and switch.first.is_visible():
+                            switch.first.click(timeout=3000)
+                            fr.wait_for_timeout(800)
+                    except Exception:
+                        pass
+                    try:
+                        qr_selector = "img.js_qrcode_img, img.web_qrcode_img, img[src*='/connect/qrcode/']"
+                        fr.wait_for_selector(qr_selector, timeout=10000, state="attached")
+                        qr_el = fr.query_selector(qr_selector)
+                        if qr_el:
+                            fr.wait_for_timeout(800)
+                            qr_el.screenshot(path=str(qr_out))
+                            return
                     except Exception:
                         pass
                     break
@@ -1003,7 +1020,7 @@ def cmd_login_qr(a) -> int:
     login_state.write_status(sf, "starting")
     with sync_playwright() as p:
         browser = p.chromium.launch_persistent_context(
-            str(profile), headless=True, locale="zh-CN",
+            str(profile), headless=a.platform not in _HEADED_LOGIN_PLATFORMS, locale="zh-CN",
             args=LAUNCH_ARGS)
         page = browser.pages[0] if browser.pages else browser.new_page()
         try:
@@ -1035,7 +1052,13 @@ def cmd_login_qr(a) -> int:
             # 其余平台在主页面异步渲染（base64/canvas）→ 先等渲染再按打分裁剪。统一走 _capture_qr。
             qr_out.parent.mkdir(parents=True, exist_ok=True)
             _capture_qr(page, qr_out, cfg)
-            login_state.write_status(sf, "qr_ready", f"扫码登录 {cfg['name']}", qr=str(qr_out))
+            if a.platform == "weixin-channels":
+                message = "请在已打开的登录窗口点击微信快捷登录，或使用其他账号扫码"
+            elif a.platform in _HEADED_LOGIN_PLATFORMS:
+                message = f"请在已打开的浏览器窗口中完成 {cfg['name']} 登录（扫码或账号密码均可）"
+            else:
+                message = f"扫码登录 {cfg['name']}"
+            login_state.write_status(sf, "qr_ready", message, qr=str(qr_out))
             print(f"📱 {cfg['name']} 登录页/二维码已保存：{qr_out}", file=sys.stderr)
             print(f"⏳ 等待扫码（最长 {timeout_s}s）...", file=sys.stderr)
 

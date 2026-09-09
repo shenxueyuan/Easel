@@ -96,6 +96,26 @@ def _auto_srt(shots: list[dict], durations: list[float], srt_path: Path):
 DEFAULT_SUB_FONT = "Noto Sans CJK SC"   # 环境已装 fonts-noto-cjk；缺则 libass 回退系统字体
 
 
+def _resolve_sub_font(font: str | None = None) -> str:
+    """选择系统可用的中文字体。优先 Noto Sans CJK SC，缺则按回退列表找第一个可用的。"""
+    import shutil as _sh
+    candidates = [font or DEFAULT_SUB_FONT, "Noto Sans CJK SC", "Heiti SC", "Hiragino Sans GB",
+                  "PingFang SC", "Microsoft YaHei", "Arial Unicode MS", "sans-serif"]
+    seen = set()
+    for c in candidates:
+        if not c or c in seen:
+            continue
+        seen.add(c)
+        # fc-list 检查字体是否可用（按 family 名匹配）
+        try:
+            r = subprocess.run(["fc-list", ":family=" + c], capture_output=True, text=True, timeout=5)
+            if r.stdout.strip():
+                return c
+        except Exception:
+            pass
+    return "sans-serif"  # libass 最终回退
+
+
 def _ass_ts(srt_ts: str) -> str:
     """SRT 时间戳 HH:MM:SS,mmm → ASS H:MM:SS.cs（厘秒）。"""
     srt_ts = srt_ts.strip().replace(".", ",")
@@ -158,9 +178,10 @@ def _srt_to_ass(srt_path: Path, ass_path: Path, w: int, h: int,
     """
     fs = int(font_size if font_size else round(min(w, h) * 0.05))
     mv = int(margin_v if margin_v is not None else round(h * 0.07))
-    mh = int(round(w * 0.06))
+    mh = int(round(w * 0.03))
     # 每行最大宽度单位 = 可用像素宽 / 字号；留 6% 安全余量防描边/字距溢出。
     max_units = max(6.0, (w - 2 * mh) / fs * 0.94)
+    resolved_font = _resolve_sub_font(font)
     header = (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
@@ -170,7 +191,7 @@ def _srt_to_ass(srt_path: Path, ass_path: Path, w: int, h: int,
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
         "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
         "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        f"Style: Default,{font},{fs},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,"
+        f"Style: Default,{resolved_font},{fs},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,"
         f"0,0,0,0,100,100,0,0,1,2,0,2,{mh},{mh},{mv},1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
@@ -496,8 +517,9 @@ def cmd_selftest(_args) -> int:
         ass = wd / "t.ass"
         _srt_to_ass(srt, ass, 1080, 1920)
         at = ass.read_text(encoding="utf-8")
+        resolved = _resolve_sub_font()
         ok_ass = ("PlayResX: 1080" in at and "PlayResY: 1920" in at
-                  and f"Default,{DEFAULT_SUB_FONT},54," in at   # 1080*0.05=54，不再等效 106
+                  and f"Default,{resolved},54," in at   # 1080*0.05=54，字体按系统回退
                   and at.count("Dialogue:") == 2
                   and ",2,"  # Alignment=2 底部居中（样式行倒数第 4 组）
                   in at.split("Style: Default,")[1])

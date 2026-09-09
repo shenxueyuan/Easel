@@ -5,10 +5,10 @@ import type { ComponentType } from 'react';
 import {
   IconChat, IconSkills, IconOutputs, IconAccounts, IconProfile,
   IconNewChat, IconEdit, IconArchive, IconUnarchive, IconTrash, IconChevron,
-  IconDashboard, IconBook,
+  IconDashboard, IconBook, IconMusic,
 } from './icons';
 
-export type Page = 'dashboard' | 'chat' | 'usecases' | 'trends' | 'ideas' | 'calendar' | 'publish' | 'breakdown' | 'skills' | 'outputs' | 'accounts' | 'profile';
+export type Page = 'dashboard' | 'chat' | 'usecases' | 'trends' | 'ideas' | 'calendar' | 'publish' | 'breakdown' | 'skills' | 'outputs' | 'bgm' | 'accounts' | 'profile';
 
 interface SidebarProps {
   currentPage: Page;
@@ -35,6 +35,7 @@ const NAV: { page: Page; Icon: ComponentType<{ size?: number }>; label: string }
   { page: 'usecases', Icon: IconBook, label: '使用场景' },
   { page: 'skills', Icon: IconSkills, label: '技能库' },
   { page: 'outputs', Icon: IconOutputs, label: '内容库' },
+  { page: 'bgm', Icon: IconMusic, label: 'BGM 曲库' },
   { page: 'accounts', Icon: IconAccounts, label: '账号' },
   { page: 'profile', Icon: IconProfile, label: '画像' },
 ];
@@ -113,7 +114,14 @@ export default function Sidebar({
     <div className="sidebar">
       <div className="sidebar-header">
         <div className="sidebar-logo">
-          <img className="sidebar-logo-icon" src="./static/elephbrain-icon-transparent.png" alt="" />
+          <img className="sidebar-logo-icon" src="/static/elephbrain-icon-transparent.png" alt="ElephBrain AI"
+            onError={(event) => {
+              const image = event.currentTarget;
+              if (!image.dataset.fallback) {
+                image.dataset.fallback = '1';
+                image.src = '/static/elephbrain-icon.png';
+              }
+            }} />
           <h1>ElephBrain AI</h1>
         </div>
         <select
@@ -123,8 +131,7 @@ export default function Sidebar({
             if (e.target.value === '__new__') { onNewProfile(); return; }
             onPersonaChange(e.target.value);
           }}
-          disabled={activeSessionHasMessages}
-          title={activeSessionHasMessages ? '当前对话已绑定画像，切换画像将新建对话' : '选择用户画像'}
+          title={activeSessionHasMessages ? '切换当前对话使用的用户画像' : '选择用户画像'}
         >
           <option value="">通用模式</option>
           {personas.map((p) => (

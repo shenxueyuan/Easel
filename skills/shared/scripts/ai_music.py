@@ -63,7 +63,7 @@ UA = (
 
 # provider 默认值（可被 env / --model 覆盖）
 DEFAULT_DASHSCOPE_BASE = "https://dashscope.aliyuncs.com"
-DEFAULT_DASHSCOPE_MODEL = "fun-music-preview"
+DEFAULT_DASHSCOPE_MODEL = "fun-music-v1"
 DEFAULT_SUNO_MODEL = "music-1"
 
 # 每个 provider 声明所需 env（主名 → 别名元组）。check / 报错都基于这份声明。
@@ -245,11 +245,13 @@ def _find_audio_url(obj: Any) -> str | None:
 
 
 # ── provider: dashscope ────────────────────────────────────
-# 依据阿里云 DashScope（百炼）公开的异步任务规范实现：
-#   提交时带 header  X-DashScope-Async: enable  → 返回 output.task_id / task_status
-#   轮询 GET {base}/tasks/{task_id} → task_status PENDING/RUNNING/SUCCEEDED/FAILED
-# 音乐生成的具体 model 名 / 输入字段各版本略有差异，故 model 与 base_url 均可用 env 覆盖。
-# 未用真实 key 实测。
+# 依据阿里云百炼 Fun-Music 官方 API 文档实现：
+#   端点：POST {base}/api/v1/services/audio/music/generation
+#   非流式：直接返回 output.audio.url（24h 有效 OSS URL）
+#   流式：加 X-DashScope-SSE: enable，SSE 返回 base64 音频片段 + 最终 url
+#   参数在 input 对象内：prompt/lyrics（二选一）、is_instrumental、gender、format
+#   模型：fun-music-v1（正式）或 fun-music-preview（预览）
+# 文档：https://help.aliyun.com/zh/model-studio/fun-music-api
 
 def generate_dashscope(args: argparse.Namespace) -> Path:
     api_key = require_env("DASHSCOPE_API_KEY")
@@ -270,30 +272,43 @@ def generate_dashscope(args: argparse.Namespace) -> Path:
     payload = {"model": model, "input": input_block}
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "X-DashScope-Async": "enable",
     }
-    print(f"[dashscope] 提交任务到 {endpoint}（model={model}）...", file=sys.stderr)
-    result = http_post(endpoint, headers, payload, timeout=60)
+
+    # Fun-Music 支持非流式（直接返回 URL）和流式（SSE base64 片段）
+    # 非流式模式：直接 POST，等待响应中 output.audio.url
+    print(f"[dashscope] 提交到 {endpoint}（model={model}）...", file=sys.stderr)
+    result = http_post(endpoint, headers, payload, timeout=120)
 
     output = result.get("output", {})
     if not isinstance(output, dict):
-        fail(f"提交响应缺少 output 对象：{json.dumps(result)[:300]}")
+        fail(f"响应缺少 output 对象：{json.dumps(result)[:300]}")
+
+    # 非流式：直接从 output.audio.url 取 URL
+    audio_obj = output.get("audio", {})
+    if isinstance(audio_obj, dict):
+        audio_url = audio_obj.get("url", "")
+        if audio_url:
+            print(f"[dashscope] 生成完成，下载音频...", file=sys.stderr)
+            return download_audio(audio_url, Path(args.output))
+
+    # 兼容：有些版本可能返回异步 task_id（旧模式 fallback）
     task_id = output.get("task_id")
-    if not task_id:
-        # 有些错误直接在顶层带 code/message
-        code = result.get("code")
-        message = result.get("message", json.dumps(result)[:300])
-        fail(f"提交失败：{message}（code={code}）")
+    if task_id:
+        print(f"[dashscope] 检测到异步任务模式：{task_id}", file=sys.stderr)
+        task_url = f"{base_url}/api/v1/tasks/{task_id}"
+        poll_headers = {"Authorization": f"Bearer {api_key}"}
+        task_output = _poll_dashscope(task_url, poll_headers, args.poll_interval, args.timeout)
+        audio_url = _find_audio_url(task_output)
+        if not audio_url:
+            fail(f"任务完成但未找到音频 URL：{json.dumps(task_output)[:300]}")
+        return download_audio(audio_url, Path(args.output))
 
-    print(f"[dashscope] 任务已提交：{task_id}", file=sys.stderr)
-    task_url = f"{base_url}/api/v1/tasks/{task_id}"
-    poll_headers = {"Authorization": f"Bearer {api_key}"}
-    task_output = _poll_dashscope(task_url, poll_headers, args.poll_interval, args.timeout)
+    # 直接从 output 里找音频 URL（兼容各种返回结构）
+    audio_url = _find_audio_url(result)
+    if audio_url:
+        return download_audio(audio_url, Path(args.output))
 
-    audio_url = _find_audio_url(task_output)
-    if not audio_url:
-        fail(f"任务完成但未找到音频 URL：{json.dumps(task_output)[:300]}")
-    return download_audio(audio_url, Path(args.output))
+    fail(f"未找到音频 URL：{json.dumps(result)[:500]}")
 
 
 def _poll_dashscope(task_url: str, headers: dict[str, str],
@@ -481,6 +496,8 @@ def build_parser() -> argparse.ArgumentParser:
     pg.add_argument("--duration", type=int, help="时长（秒），部分 provider 支持")
     pg.add_argument("--instrumental", action="store_true",
                     help="纯音乐（无人声 BGM）")
+    pg.add_argument("--gender", choices=("male", "female"), default="",
+                    help="演唱性别（仅 fun-music-v1 支持，默认 female）")
     pg.add_argument("--model", help="覆盖模型名（默认读 env / 内置默认）")
     pg.add_argument("-o", "--output", required=True,
                     help="输出音频路径（无扩展名时按返回类型补 .mp3）")

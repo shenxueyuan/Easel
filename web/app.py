@@ -610,6 +610,20 @@ async def onepage():
     return FileResponse(STATIC_DIR / "onepage.html", media_type="text/html")
 
 
+@app.get("/publish-sync-preview")
+async def publish_sync_preview():
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse('''<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ElephBrain 发布同步预览</title><style>
+body{margin:0;background:#f6f7fb;color:#172033;font:16px/1.8 -apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans SC",sans-serif}.bar{padding:10px 20px;background:#172033;color:#fff;font-size:13px}.wrap{max-width:760px;margin:32px auto;padding:42px 54px;background:#fff;box-shadow:0 4px 24px #19243a12}h1{font-size:30px;line-height:1.35;margin:0 0 20px}.body{white-space:pre-wrap}.tags{color:#1677ff;margin-top:28px}.media img{display:block;max-width:100%;margin:18px 0;border-radius:8px}.empty{color:#8490a5}
+</style></head><body><div class="bar">ElephBrain · 插件同步预览（内容随发布页草稿自动更新）</div><main class="wrap"><article id="article"></article></main><script>
+const esc=v=>String(v||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function render(){let d={};try{d=JSON.parse(localStorage.getItem('easel_publish_draft')||'{}')}catch{};const title=d.title||'';const body=d.body||'';const tags=String(d.tags||'').split(/[,，]/).map(x=>x.trim()).filter(Boolean);const media=(d.media||[]).filter(p=>/\\.(png|jpe?g|gif|webp|bmp)$/i.test(p)).map(p=>`<img src="/api/media/${p.split('/').map(encodeURIComponent).join('/')}" alt="发布图片">`).join('');document.title=title||'ElephBrain 发布同步预览';document.querySelector('#article').innerHTML=title||body?`<h1>${esc(title||'未命名内容')}</h1><div class="body">${esc(body)}</div>${tags.length?`<div class="tags">${tags.map(t=>'#'+esc(t)).join(' ')}</div>`:''}<div class="media">${media}</div>`:'<p class="empty">请返回 ElephBrain 发布中心填写标题和正文。</p>'};
+render();addEventListener('storage',e=>{if(e.key==='easel_publish_draft')render()});setInterval(render,1000);
+</script></body></html>''')
+
+
 @app.get("/assets/{path:path}")
 async def react_assets(path: str):
     base = (REACT_DIR / "assets").resolve()
@@ -1662,12 +1676,53 @@ def _login_status(platform: str) -> dict:
     return data
 
 
+def _account_login_info(platform: str, cfg: dict) -> dict:
+    """登录态 + 未登录原因（供账号页/发布页区分「未登录过」与「已过期」）。"""
+    logged = _account_logged_in(platform, cfg)
+    info = {'loggedIn': logged, 'loginState': '', 'loginReason': '', 'loginTs': 0}
+    if logged:
+        st = LOGIN_DIR / f'{platform}.json'
+        if st.is_file():
+            try:
+                info['loginTs'] = int(json.loads(st.read_text()).get('ts') or 0)
+            except Exception:
+                pass
+        return info
+    if cfg['backend'] == 'biliup':
+        # biliup 看 cookies.json，不存在即从未登录
+        info['loginState'] = 'never'
+        info['loginReason'] = '未登录过'
+        return info
+    st = LOGIN_DIR / f'{platform}.json'
+    if not st.is_file():
+        info['loginState'] = 'never'
+        info['loginReason'] = '未登录过'
+        return info
+    try:
+        d = json.loads(st.read_text())
+    except Exception:
+        d = {}
+    state = d.get('state', 'unknown')
+    msg = d.get('message', '')
+    info['loginState'] = state
+    info['loginTs'] = int(d.get('ts') or 0)
+    if state == 'expired':
+        info['loginReason'] = msg or '登录已过期，请重新登录'
+    elif state == 'error':
+        info['loginReason'] = f'上次登录失败：{msg}' if msg else '上次登录失败'
+    elif state in ('starting', 'qr_ready', 'scanned', 'sms_required', 'verifying'):
+        info['loginReason'] = '上次登录未完成（二维码未扫完或流程中断）'
+    else:
+        info['loginReason'] = '登录状态未知，请重新登录'
+    return info
+
+
 @app.get("/api/accounts")
 async def api_accounts():
     return [
         {'platform': pf, 'name': cfg['name'], 'backend': cfg['backend'],
          'supported': cfg['backend'] != 'unsupported',
-         'loggedIn': _account_logged_in(pf, cfg),
+         **_account_login_info(pf, cfg),
          'note': cfg.get('note', '')}
         for pf, cfg in LOGIN_RUNNERS.items()
     ]
@@ -1774,6 +1829,7 @@ async def api_account_whoami(platform: str):
         hit = _WHOAMI_CACHE.get(platform)
     if hit and (time.time() - hit[0]) < WHOAMI_TTL:
         return hit[1]
+    profile_copy = None
     if backend == 'biliup':
         cmd = [sys.executable, str(SHARED_SCRIPTS / 'bili_login.py'), 'whoami',
                '--cookie', str(PROJECT_ROOT / 'cookies.json')]
@@ -1784,11 +1840,26 @@ async def api_account_whoami(platform: str):
     else:
         cmd = [sys.executable, str(SHARED_SCRIPTS / 'web_publisher.py'), 'whoami',
                '--platform', cfg['wp']]
+    if backend != 'biliup':
+        import tempfile
+        profile_copy = tempfile.TemporaryDirectory(prefix=f'easel-whoami-{platform}-')
+        source = BROWSER_PROFILES / cfg['profile']
+        target = Path(profile_copy.name) / cfg['profile']
+        if source.is_dir():
+            await asyncio.to_thread(
+                shutil.copytree, source, target,
+                ignore=shutil.ignore_patterns('Cache', 'Code Cache', 'GPUCache', 'ShaderCache',
+                                               'GrShaderCache', 'DawnCache', 'Crashpad',
+                                               'Singleton*', 'DevToolsActivePort'))
+        cmd += ['--profile-base', profile_copy.name]
     try:
         proc = await asyncio.to_thread(subprocess.run, cmd, cwd=str(PROJECT_ROOT), env=_proxy_env(),
                                        capture_output=True, text=True, timeout=150)
     except subprocess.TimeoutExpired:
         raise HTTPException(504, '校验超时（浏览器起不来或网络慢）')
+    finally:
+        if profile_copy:
+            profile_copy.cleanup()
     data = {'loggedIn': False, 'name': '', 'avatar': ''}
     confident = False   # 是否拿到「可信」校验结论（子进程正常跑出 JSON 且无 error 字段）
     for line in reversed((proc.stdout or '').strip().splitlines()):
@@ -1810,14 +1881,14 @@ async def api_account_whoami(platform: str):
         _WHOAMI_CACHE[platform] = (time.time(), data)
     # 回写标记：确认已登录 → 快速路径（/api/accounts、/api/analytics/platforms）此后也正确；
     # biliup 走 cookies.json 判定，不用标记文件。
+    # ⚠️ whoami 返回 false 时不写 'expired'：headless 浏览器可能因网络抖动/SPA 未加载完/平台风控
+    #    误判 false，一旦写 expired 就不会自愈（前端读标记显示"未登录"），用户只能重新扫码。
+    #    改为只确认 success（自愈假阳性），不主动写 expired——"未登录"由 whoami 实时结果判定，
+    #    标记文件只记 success（登录流程自己写的）或保持原状。
     if backend != 'biliup':
         if data['loggedIn']:
             _write_login_marker(platform, 'success', data.get('name') or '')
-        else:
-            try:
-                (LOGIN_DIR / f'{platform}.json').unlink()
-            except OSError:
-                pass
+        # else: 不写 expired，避免误判导致登录态永久丢失
     return data
 
 
@@ -1874,11 +1945,14 @@ def _load_wechat_yaml() -> dict:
 
 
 def _save_wechat_yaml(data: dict) -> None:
-    """原子写 wechat-publisher.yaml。"""
+    """原子写 wechat-publisher.yaml，并保留最近一次配置备份。"""
     import yaml
     tmp = WECHAT_YAML.with_suffix('.yaml.tmp')
+    backup = WECHAT_YAML.with_suffix('.yaml.bak')
     with open(tmp, 'w', encoding='utf-8') as f:
         yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    if WECHAT_YAML.is_file():
+        shutil.copy2(WECHAT_YAML, backup)
     tmp.replace(WECHAT_YAML)
 
 
@@ -1975,13 +2049,15 @@ async def api_wechat_mp_delete(key: str):
 
 @app.get("/api/wechatsync/check")
 async def api_wechatsync_check():
-    """自检 Wechatsync 环境：CLI 是否安装、Token 是否配置。"""
-    import shutil as _shutil
-    cli_path = _shutil.which('wechatsync')
+    """快速自检 Wechatsync 静态环境 + 扩展连接状态。
+    扩展连接检测：先查 HTTP API(端口 9528) 是否在线，在线则读 connected 字段；
+    不在线则尝试快速起 CLI 进程等 5 秒看扩展是否连上来。"""
+    cli_path = shutil.which('wechatsync')
     cli_version = None
     if cli_path:
         try:
-            r = subprocess.run([cli_path, '--version'], capture_output=True, text=True, timeout=10)
+            r = await asyncio.to_thread(
+                subprocess.run, [cli_path, '--version'], capture_output=True, text=True, timeout=3)
             cli_version = (r.stdout or r.stderr or '').strip().splitlines()[0] if (r.stdout or r.stderr) else None
         except Exception:
             pass
@@ -1990,19 +2066,17 @@ async def api_wechatsync_check():
     # 检测 OpenClaw 技能是否已安装
     skill_dir = Path.home() / '.openclaw' / 'workspace' / 'skills' / 'wechatsync'
     skill_installed = skill_dir.is_dir()
-    # 检测 Chrome 扩展是否可连接（CLI 连不上扩展说明扩展没装/没开）
-    extension_connected = False
-    if cli_path and token:
-        try:
-            r = subprocess.run(
-                [cli_path, 'platforms', '--auth'],
-                capture_output=True, text=True, timeout=15,
-                env={**os.environ, 'WECHATSYNC_TOKEN': token},
-            )
-            # 如果输出里没有"需要安装 Chrome 扩展"说明连上了
-            extension_connected = '需要安装 Chrome 扩展' not in (r.stdout or '') + (r.stderr or '')
-        except Exception:
-            pass
+
+    # 扩展连接检测：先查已有的 HTTP API(9528) 是否在线
+    extension_connected = None   # None = 未知, True/False = 已检测
+    try:
+        import urllib.request
+        with urllib.request.urlopen('http://localhost:9528/status', timeout=2) as resp:
+            ext_status = json.loads(resp.read())
+            extension_connected = bool(ext_status.get('connected'))
+    except Exception:
+        pass    # HTTP API 不在线 = 没有 CLI 进程在跑，需要主动探测
+
     return {
         'cli_installed': bool(cli_path),
         'cli_path': cli_path or '',
@@ -2011,8 +2085,68 @@ async def api_wechatsync_check():
         'token_masked': _mask_secret(token),
         'skill_installed': skill_installed,
         'extension_connected': extension_connected,
-        'ready': bool(cli_path and token and extension_connected),
+        'ready': bool(cli_path and token),
     }
+
+
+@app.post("/api/wechatsync/ping")
+async def api_wechatsync_ping():
+    """主动探测扩展连接：起一个短命 CLI 进程（wechatsync platforms），等 8 秒看扩展是否连上来。
+    比 check 更慢（~8s）但能给出确定结论。"""
+    cli_path = shutil.which('wechatsync')
+    if not cli_path:
+        raise HTTPException(400, '未安装 wechatsync CLI')
+    data = _load_wechat_yaml()
+    token = (data.get('integrations') or {}).get('wechatsync_mcp_token', '') or ''
+    env = {**os.environ, 'WECHATSYNC_TOKEN': token} if token else os.environ
+    # wechatsync platforms 会起 WebSocket 服务器等扩展连接
+    try:
+        proc = await asyncio.to_thread(
+            subprocess.run, [cli_path, 'platforms', '--auth'],
+            capture_output=True, text=True, timeout=15, env=env)
+    except subprocess.TimeoutExpired:
+        return {'connected': False, 'message': '探测超时（扩展未在 15s 内连接）'}
+    # 检查输出：如果扩展连上来，platforms --auth 会输出平台列表 + 登录状态
+    out = (proc.stdout or '') + (proc.stderr or '')
+    if '需要安装 Chrome 扩展' in out or 'Extension' not in out:
+        return {'connected': False, 'authenticated': False, 'message': '扩展未连接，请确保 Chrome 扩展已安装并开启 MCP 连接'}
+    if re.search(r'invalid or missing token|token.*(?:invalid|missing|expired)', out, re.I):
+        return {'connected': True, 'authenticated': False, 'message': '扩展已连接，但 Token 无效或不匹配，请在扩展 MCP 设置中复制最新 Token 后到账号页重新保存', 'output': out[-500:]}
+    return {'connected': True, 'authenticated': True, 'message': '扩展已连接且 Token 有效', 'output': out[-500:]}
+
+
+@app.get('/api/wechatsync/platforms')
+async def api_wechatsync_platforms():
+    cli_path = shutil.which('wechatsync')
+    if not cli_path:
+        raise HTTPException(400, '未安装 wechatsync CLI')
+    data = _load_wechat_yaml()
+    token = (data.get('integrations') or {}).get('wechatsync_mcp_token', '') or ''
+    if not token:
+        raise HTTPException(400, '未配置 Wechatsync Token')
+    try:
+        proc = await asyncio.to_thread(subprocess.run, [cli_path, 'platforms', '--auth'],
+                                       capture_output=True, text=True, timeout=30,
+                                       env={**os.environ, 'WECHATSYNC_TOKEN': token})
+    except subprocess.TimeoutExpired:
+        raise HTTPException(504, '扩展连接超时，请确认 MCP 连接已开启')
+    out = re.sub(r'\x1b\[[0-9;]*m', '', (proc.stdout or '') + '\n' + (proc.stderr or ''))
+    if re.search(r'invalid or missing token|token.*(?:invalid|missing|expired)', out, re.I):
+        raise HTTPException(401, '扩展已连接，但 Token 无效或不匹配')
+    if 'Chrome Extension' not in out or '已连接' not in out:
+        raise HTTPException(503, '扩展未连接，请确认 MCP 连接已开启')
+    platforms = []
+    for line in out.splitlines():
+        match = re.match(r'\s*([\w-]+)\s+(.+?)\s+(✓ 已登录|✗ 未登录)(?:\s+\((.*?)\))?\s*$', line)
+        if not match or match.group(1) in {'支持的', '启动服务'}:
+            continue
+        pid, name, status, username = match.groups()
+        if not status:
+            continue
+        platforms.append({'id': pid, 'name': name.strip(), 'loggedIn': status.startswith('✓'), 'username': username or ''})
+    if not platforms:
+        raise HTTPException(502, '未能解析扩展平台列表，请查看扩展连接状态')
+    return {'platforms': platforms, 'raw': out[-1000:]}
 
 
 class WechatsyncInstallRequest(BaseModel):
@@ -2083,6 +2217,10 @@ def _find_chrome() -> str | None:
         if Path(p).is_file():
             return p
     return None
+
+
+class ExtensionInstallRequest(BaseModel):
+    action: Literal['unzip', 'download']
 
 
 @app.get("/api/wechatsync/extension")
@@ -2232,7 +2370,89 @@ async def api_analytics(platform: str):
 
 
 MEDIA_REQUIRED = {"xiaohongshu", "douyin", "kuaishou", "weixin-channels", "bilibili"}
-VIDEO_ONLY_PUBLISH = {"douyin", "weixin-channels", "bilibili"}   # 只能发视频的平台
+VIDEO_ONLY_PUBLISH = {"weixin-channels", "bilibili"}   # 只能发视频的平台（抖音图文走 douyin_publish.py publish --images，已放开）
+PUBLISH_PLATFORMS = set(LOGIN_RUNNERS)
+
+
+class PublishDraftResolveRequest(BaseModel):
+    context: str = ''
+    session_id: str = ''
+    since: int = 0
+
+
+def _publish_media_path(value: str) -> str | None:
+    try:
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            value = value.removeprefix('outputs/')
+            path = OUTPUTS_DIR / value
+        rel = path.resolve().relative_to(OUTPUTS_DIR.resolve())
+        return rel.as_posix() if path.resolve().is_file() else None
+    except (OSError, ValueError):
+        return None
+
+
+def _publish_manifest_candidates(context: str, session_id: str = '') -> list[tuple[float, float, dict]]:
+    candidates = []
+    lowered = context.lower()
+    for path in OUTPUTS_DIR.rglob('*.json'):
+        if path.name not in {'content.json', 'publish.json', 'manifest.json'}:
+            continue
+        try:
+            if path.stat().st_size > 1024 * 1024:
+                continue
+            raw = json.loads(path.read_text(encoding='utf-8'))
+            content = raw.get('content', raw)
+            if not isinstance(content, dict):
+                continue
+            title = str(content.get('title') or '').strip()
+            body = str(content.get('body') or content.get('content') or '').strip()
+            if not title and not body:
+                continue
+            media_values = []
+            for key in ('images', 'media'):
+                value = content.get(key) or []
+                media_values.extend(value if isinstance(value, list) else [value])
+            for key in ('video', 'cover'):
+                if content.get(key):
+                    media_values.append(content[key])
+            media = [p for p in (_publish_media_path(str(v)) for v in media_values) if p]
+            platforms = [p for p in (raw.get('platforms') or []) if p in PUBLISH_PLATFORMS]
+            tags = content.get('tags') or []
+            tags_text = ','.join(str(tag).lstrip('#') for tag in tags) if isinstance(tags, list) else str(tags)
+            rel = path.resolve().relative_to(OUTPUTS_DIR.resolve()).as_posix()
+            terms = set(re.findall(r'[a-z0-9]{2,}|[\u4e00-\u9fff]{2,}', f'{path.parent.name} {title}'.lower()))
+            matched = float(sum(min(len(term), 8) for term in terms if term in lowered))
+            if rel.lower() in lowered or path.parent.name.lower() in lowered:
+                matched += 100
+            if session_id and str(raw.get('session_id') or '') == session_id:
+                matched += 1000
+            mtime = path.stat().st_mtime
+            score = matched + mtime / 10_000_000_000
+            candidates.append((score, mtime, {
+                'title': title,
+                'body': body,
+                'platforms': platforms,
+                'overrides': {},
+                'tags': tags_text,
+                'media': list(dict.fromkeys(media)),
+                'source': rel,
+            }))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+    return sorted(candidates, key=lambda item: item[0], reverse=True)
+
+
+@app.post('/api/publish/draft/resolve')
+async def api_publish_draft_resolve(req: PublishDraftResolveRequest):
+    candidates = await asyncio.to_thread(_publish_manifest_candidates, req.context, req.session_id)
+    if not candidates:
+        raise HTTPException(404, '当前会话没有找到结构化发布包，请先让 AI 整理标题、正文和媒体后再发布')
+    score, mtime, draft = candidates[0]
+    session_started = req.since / 1000 if req.since else 0
+    if score < 1 and (not session_started or mtime < session_started - 60):
+        raise HTTPException(404, '没有找到属于当前会话的发布包，为避免带入其他内容，已停止跳转')
+    return draft
 
 
 class PublishRequest(BaseModel):
@@ -2344,7 +2564,7 @@ async def api_publish_sms(platform: str, req: SmsCodeRequest):
     return {'ok': True}
 
 
-@app.post("/api/publish/{platform}")
+@app.post("/api/publish/native/{platform}")
 async def api_publish(platform: str, req: PublishRequest):
     """一键发布：分发到对应 publisher 脚本真发（--exec）。二次确认在前端。"""
     cfg = LOGIN_RUNNERS.get(platform)
@@ -2428,6 +2648,915 @@ async def api_publish(platform: str, req: PublishRequest):
         except Exception:
             pass
     return {'ok': ok, 'message': '发布成功' if ok else '发布失败（见 detail）', 'detail': detail}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 异步发布 Job 系统：多平台串行执行 + 状态持久化 + 页面刷新恢复 + 逐平台超时
+# ──────────────────────────────────────────────────────────────────────
+JOBS_DIR = PUBLISH_DIR / 'jobs'
+_JOB_CANCEL_FLAG: dict[str, bool] = {}   # job_id → cancel 请求标志（内存中，线程间共享）
+
+
+class PublishJobRequest(BaseModel):
+    title: str = ''
+    body: str = ''
+    tags: str = ''
+    media: list[str] = []
+    platform_contents: dict[str, str] = {}
+    native_platforms: list[str] = []       # 原生发布平台 key（xiaohongshu/douyin/...）
+    wechatsync_platforms: list[str] = []   # Wechatsync 平台 key（toutiao/juejin/...）
+
+
+def _publish_content(req: PublishJobRequest, platform: str) -> str:
+    return (req.platform_contents.get(platform) or req.body).strip()
+
+
+def _publish_media(req: PublishJobRequest) -> tuple[list[Path], list[Path]]:
+    images, videos = [], []
+    for rel in req.media:
+        full = _safe_output_path(rel)
+        if full.suffix.lower() in IMAGE_EXTS:
+            images.append(full)
+        elif full.suffix.lower() in VIDEO_EXTS:
+            videos.append(full)
+    return images, videos
+
+
+BGM_DIR = LOCAL_OUTPUTS_DIR / '_shared' / 'bgm'   # 本地公共 BGM 曲库（图文合成视频时自动选曲的来源）
+BGM_META = BGM_DIR / '_meta.json'   # 曲目元数据：{文件名: {"style": 风格key}}
+
+# BGM 风格枚举（图文合成视频时按内容自动匹配；用户可在曲库页维护）
+BGM_STYLES = {
+    'corporate': '企业宣传',   # 大气、稳重、品牌感
+    'ecom': '电商促销',        # 节奏感强、促单氛围
+    'viral': '热门卡点',       # 短视频爆款、节奏明快
+    'light': '图文轻快',       # 图文/种草、轻松日常
+    'emotional': '情感叙事',   # 故事、走心、纪录片感
+    'tech': '科技数码',        # 科技感、发布会、评测
+    'other': '其他',
+}
+
+
+def _bgm_meta() -> dict:
+    try:
+        return json.loads(BGM_META.read_text(encoding='utf-8')) if BGM_META.is_file() else {}
+    except Exception:
+        return {}
+
+
+def _bgm_meta_save(meta: dict) -> None:
+    try:
+        BGM_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = BGM_META.with_suffix('.json.tmp')
+        tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding='utf-8')
+        os.replace(tmp, BGM_META)
+    except OSError:
+        pass
+
+
+def _bgm_tracks() -> list[Path]:
+    """曲库全部音频文件（_shared/bgm 为主库，ai-music 产物也算入可选池）。"""
+    roots = [BGM_DIR, LOCAL_OUTPUTS_DIR / 'ai-music']
+    return sorted({p.resolve() for root in roots if root.is_dir() for p in root.iterdir()
+                   if p.is_file() and p.suffix.lower() in AUDIO_EXTS})
+
+
+# 风格降级链：主风格无曲目时按序回退到相近风格，避免科技/企业类内容因曲库未标 tech 而静音。
+BGM_FALLBACK = {
+    'tech': ('corporate', 'viral'),
+    'corporate': ('tech', 'light'),
+    'ecom': ('viral', 'light'),
+    'viral': ('ecom', 'light'),
+    'emotional': ('light', 'corporate'),
+    'light': ('viral', 'corporate'),
+}
+
+
+def _video_bgm(title: str, body: str) -> Path | None:
+    """仅在图文合成视频时，根据内容语义从已标记风格的曲库中稳定选曲。
+
+    主风格无曲目时按 BGM_FALLBACK 降级到相近风格；仍无曲目才返回 None（静音）。
+    """
+    text = f'{title}\n{body}'.lower()
+    style_keywords = (
+        ('ecom', ('商品', '电商', '促销', '优惠', '折扣', '限时', '下单', '购买', '大促', '上新', '种草')),
+        ('tech', ('科技', '数码', 'ai', '人工智能', '软件', '硬件', '发布会', '评测')),
+        ('corporate', ('企业', '公司', '品牌', '服务', '招商', '招聘', '解决方案')),
+        ('emotional', ('故事', '回忆', '情感', '纪录', '成长', '治愈', '人生')),
+        ('viral', ('热点', '爆款', '挑战', '卡点', '潮流', '热门')),
+        ('light', ('日常', '生活', '分享', 'vlog', '图文')),
+    )
+    style = next((key for key, words in style_keywords if any(word in text for word in words)), '')
+    if not style:
+        return None
+    meta = _bgm_meta()
+    candidates = [style, *BGM_FALLBACK.get(style, ())]
+    for cand in candidates:
+        tracks = [p for p in _bgm_tracks() if meta.get(p.name, {}).get('style') == cand]
+        if tracks:
+            pick = int(hashlib.sha256(f'{title}|{body}'.encode('utf-8')).hexdigest()[:8], 16) % len(tracks)
+            return tracks[pick]
+    return None
+
+
+@app.get("/api/bgm")
+async def api_bgm_list():
+    """BGM 曲库列表：文件名、大小、来源、风格、可试听 URL。"""
+    meta = _bgm_meta()
+    out = []
+    for p in _bgm_tracks():
+        try:
+            rel = str(p.relative_to(OUTPUTS_DIR.resolve()))
+        except ValueError:
+            continue
+        out.append({'name': p.name, 'path': rel, 'size': p.stat().st_size,
+                    'source': '曲库' if p.parent == BGM_DIR.resolve() else 'AI 音乐',
+                    'style': meta.get(p.name, {}).get('style', ''),
+                    'url': f'/api/media/{rel}'})
+    return {'tracks': out, 'styles': BGM_STYLES}
+
+
+@app.post("/api/bgm")
+async def api_bgm_upload(file: UploadFile = File(...), style: str = Form('')):
+    """上传音频到公共 BGM 曲库（outputs/_shared/bgm），可同时标记风格。"""
+    name = Path(file.filename or 'bgm').name
+    ext = Path(name).suffix.lower()
+    if ext not in AUDIO_EXTS:
+        raise HTTPException(400, f'不支持的音频格式：{ext or name}（支持 {"/".join(sorted(AUDIO_EXTS))}）')
+    data = await file.read()
+    if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(413, f'{name} 超过 {MAX_UPLOAD_MB}MB 上限')
+    BGM_DIR.mkdir(parents=True, exist_ok=True)
+    target = _unique_upload_path(BGM_DIR, name)
+    target.write_bytes(data)
+    if style:
+        meta = _bgm_meta()
+        meta[target.name] = {'style': style}
+        _bgm_meta_save(meta)
+    return {'ok': True, 'name': target.name, 'path': f'_shared/bgm/{target.name}'}
+
+
+class BgmMetaRequest(BaseModel):
+    style: str = ''
+
+
+@app.patch("/api/bgm/{name}")
+async def api_bgm_update(name: str, req: BgmMetaRequest):
+    """修改曲目风格标记。"""
+    track = next((p for p in _bgm_tracks() if p.name == Path(name).name), None)
+    if not track:
+        raise HTTPException(404, '曲库中不存在该文件')
+    if req.style and req.style not in BGM_STYLES:
+        raise HTTPException(400, f'未知风格：{req.style}')
+    meta = _bgm_meta()
+    if req.style:
+        meta[track.name] = {'style': req.style}
+    else:
+        meta.pop(track.name, None)
+    _bgm_meta_save(meta)
+    return {'ok': True, 'name': track.name, 'style': req.style}
+
+
+@app.delete("/api/bgm/{name}")
+async def api_bgm_delete(name: str):
+    """从公共 BGM 曲库删除一首（仅 _shared/bgm 内，ai-music 产物请到内容库删）。"""
+    full = (BGM_DIR / Path(name).name).resolve()
+    if full.parent != BGM_DIR.resolve() or not full.is_file():
+        raise HTTPException(404, '曲库中不存在该文件')
+    full.unlink()
+    meta = _bgm_meta()
+    if meta.pop(full.name, None) is not None:
+        _bgm_meta_save(meta)
+    return {'ok': True, 'deleted': name}
+
+
+def _split_captions(body: str, n: int) -> list[str]:
+    """把正文按句切分成 n 段 caption，用于每张图片的字幕。"""
+    import re
+    sentences = [s.strip() for s in re.split(r'[。\n！？!?；;]', body) if s.strip()]
+    if not sentences:
+        return [''] * n
+    if len(sentences) <= n:
+        return sentences + [''] * (n - len(sentences))
+    per = len(sentences) / n
+    out = []
+    for i in range(n):
+        start = int(i * per)
+        end = int((i + 1) * per) if i < n - 1 else len(sentences)
+        out.append('。'.join(sentences[start:end]) + '。')
+    return out
+
+
+# 图文转视频默认配音音色（阿里云百炼 CosyVoice 系统音色，走闭源好嗓子）
+NARRATION_VOICE = 'longxiaochun_v2'  # 龙小淳 · 知性积极女声，适合口播/讲解
+
+
+def _llm_rewrite_narration(title: str, body: str, n_shots: int, out_dir: Path) -> list[str] | None:
+    """用 LLM（dashscope qwen）把正文改写为 n_shots 段口播稿，每段对应一张图。
+
+    返回 n_shots 段口播文本列表；LLM 失败返回 None（降级为按句切分）。
+    """
+    api_key = _read_env().get('DASHSCOPE_API_KEY', '').strip()
+    if not api_key:
+        return None
+    prompt = (
+        f"你是短视频口播脚本编剧。把下面的内容改写成 {n_shots} 段口播稿，用于一条 {n_shots} 张图的竖版短视频。\n\n"
+        f"要求：\n"
+        f"1. 每段对应一张图，内容要和画面呼应\n"
+        f"2. 口语化、有节奏感、像真人说话，不要书面语\n"
+        f"3. 每段 2-4 个短句，每句不超过 12 个字（含标点，字幕单行显示需要）\n"
+        f"4. 第 1 段要有钩子（抓人眼球），最后一段要有互动引导\n"
+        f"5. 保留原文核心观点，但重新组织语言\n"
+        f"6. 输出 JSON 数组，{n_shots} 个字符串元素，不要其他内容\n\n"
+        f"标题：{title}\n"
+        f"正文：\n{body}\n\n"
+        f"输出格式（纯 JSON 数组，无 markdown 代码块）：\n"
+        f'["第一段口播...", "第二段口播...", ...]'
+    )
+    payload = {
+        'model': 'qwen-plus',
+        'messages': [{'role': 'user', 'content': prompt}],
+        'temperature': 0.7,
+        'response_format': {'type': 'json_object'},
+    }
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+            data=json.dumps(payload).encode('utf-8'),
+            headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+            method='POST',
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            result = json.loads(resp.read().decode('utf-8'))
+        content = result['choices'][0]['message']['content']
+        # qwen-plus 用 json_object 模式返回 {"content": [...]} 或直接 [...]
+        parsed = json.loads(content)
+        if isinstance(parsed, dict):
+            # 尝试常见 key
+            for k in ('content', 'narration', 'scripts', 'segments'):
+                if k in parsed and isinstance(parsed[k], list):
+                    parsed = parsed[k]
+                    break
+        if isinstance(parsed, list) and len(parsed) == n_shots and all(isinstance(s, str) for s in parsed):
+            return parsed
+        # 数量不对，尝试截断或补齐
+        if isinstance(parsed, list) and all(isinstance(s, str) for s in parsed):
+            if len(parsed) >= n_shots:
+                return parsed[:n_shots]
+            return parsed + [''] * (n_shots - len(parsed))
+    except Exception:
+        pass
+    return None
+
+
+def _generate_narration_segment(text: str, out_path: Path, voice: str,
+                                srt_path: Path | None = None) -> tuple[Path | None, str]:
+    """用 tts.py 合成单段口播。srt_path 非空时同时生成分句字幕。返回 (音频路径, 错误信息)。"""
+    text = text.strip()
+    if not text:
+        return None, '空文本'
+    text_file = out_path.with_suffix('.txt')
+    text_file.write_text(text, encoding='utf-8')
+    cmd = [sys.executable, str(SHARED_SCRIPTS / 'tts.py'), 'speak',
+           '--file', str(text_file), '-o', str(out_path), '--engine', 'auto',
+           '--voice', voice]
+    if srt_path:
+        cmd += ['--subtitle', str(srt_path)]
+    try:
+        proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True,
+                              timeout=120, env=_publish_env())
+    except subprocess.TimeoutExpired:
+        return None, 'TTS 合成超时（>120s）'
+    if proc.returncode != 0 or not out_path.is_file() or out_path.stat().st_size == 0:
+        detail = '\n'.join((proc.stderr or proc.stdout or '').strip().splitlines()[-2:])[:200]
+        return None, detail or 'TTS 合成失败'
+    return out_path, ''
+
+
+def _merge_srt_files(seg_srt_paths: list[Path], seg_durations: list[float], out_srt: Path) -> None:
+    """合并多段 SRT 为一个完整 SRT，时间戳按各段时长偏移累加。"""
+    import re
+    lines = []
+    idx = 1
+    offset = 0.0
+    for srt_path, dur in zip(seg_srt_paths, seg_durations):
+        if not srt_path or not srt_path.is_file():
+            offset += dur
+            continue
+        content = srt_path.read_text(encoding='utf-8').strip()
+        if not content:
+            offset += dur
+            continue
+        # 解析 SRT 块：序号 / 时间戳 / 文本
+        blocks = re.split(r'\n\s*\n', content)
+        for block in blocks:
+            block = block.strip()
+            if not block:
+                continue
+            block_lines = block.split('\n')
+            if len(block_lines) < 3:
+                continue
+            # 第二行是时间戳
+            ts_line = block_lines[1]
+            ts_match = re.match(r'(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})', ts_line)
+            if not ts_match:
+                continue
+            start_ts = _srt_add_offset(ts_match.group(1), offset)
+            end_ts = _srt_add_offset(ts_match.group(2), offset)
+            text_lines = block_lines[2:]
+            lines.append(f"{idx}\n{start_ts} --> {end_ts}\n" + '\n'.join(text_lines) + '\n')
+            idx += 1
+        offset += dur
+    out_srt.write_text('\n'.join(lines), encoding='utf-8')
+
+
+def _srt_add_offset(ts: str, offset_sec: float) -> str:
+    """SRT 时间戳 HH:MM:SS,mmm 加偏移秒数。"""
+    hms, _, ms = ts.partition(',')
+    h, m, s = hms.split(':')
+    total_ms = int(h) * 3600000 + int(m) * 60000 + int(s) * 1000 + int(ms)
+    total_ms += int(round(offset_sec * 1000))
+    total_ms = max(0, total_ms)
+    h2, rem = divmod(total_ms, 3600000)
+    m2, rem = divmod(rem, 60000)
+    s2, ms2 = divmod(rem, 1000)
+    return f"{h2:02d}:{m2:02d}:{s2:02d},{ms2:03d}"
+
+
+def _probe_audio_duration(path: Path) -> float:
+    """用 ffprobe 取音频时长（秒）。失败返回 0。"""
+    try:
+        proc = subprocess.run(
+            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+             '-of', 'default=nw=1:nk=1', str(path)],
+            capture_output=True, text=True, timeout=10)
+        return float(proc.stdout.strip())
+    except Exception:
+        return 0.0
+
+
+def _generate_publish_video(job_id: str, req: PublishJobRequest) -> dict:
+    images, videos = _publish_media(req)
+    if videos:
+        return {'status': 'verified', 'message': '已使用现有视频', 'verified': True,
+                'media_path': str(videos[0].relative_to(OUTPUTS_DIR.resolve()))}
+    if not images:
+        return {'status': 'fail', 'message': '没有可用于生成视频的图片', 'verified': False}
+    fingerprint = hashlib.sha256((req.title + '|' + '|'.join(str(p) for p in images)).encode('utf-8')).hexdigest()[:12]
+    output_root = OUTPUTS_DIR.resolve()
+    out_dir = output_root / '_generated_videos'
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f'{fingerprint}.mp4'
+    rel = str(out.relative_to(output_root))
+    if out.is_file() and out.stat().st_size > 0:
+        if rel not in req.media:
+            req.media.append(rel)
+        return {'status': 'verified', 'message': '视频版已存在，直接复用', 'verified': True, 'media_path': rel}
+
+    n_shots = len(images)
+    work_dir = out_dir / f'{job_id}_work'
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. LLM 改写口播稿（失败降级为按句切分）
+    narration_scripts = _llm_rewrite_narration(req.title, req.body, n_shots, work_dir)
+    if narration_scripts is None:
+        narration_scripts = _split_captions(req.body, n_shots)
+        narration_source = '按句切分（LLM 不可用）'
+    else:
+        narration_source = 'LLM 改写'
+
+    # 2. 逐段 TTS 合成口播（每段对应一张图，音画同步）+ 逐句字幕
+    seg_paths: list[Path] = []
+    seg_durations: list[float] = []
+    seg_srt_paths: list[Path] = []
+    narration_ok = True
+    for i, script in enumerate(narration_scripts):
+        seg_path = work_dir / f'narration_{i:02d}.mp3'
+        seg_srt = work_dir / f'narration_{i:02d}.srt'
+        ok, err = _generate_narration_segment(script, seg_path, NARRATION_VOICE, seg_srt)
+        if ok:
+            seg_paths.append(seg_path)
+            seg_durations.append(_probe_audio_duration(seg_path))
+            seg_srt_paths.append(seg_srt)
+        else:
+            narration_ok = False
+            break
+
+    # 3. 拼接口播为完整 narration（用 ffmpeg concat）
+    narration_path = None
+    if narration_ok and seg_paths:
+        full_narration = work_dir / 'narration_full.mp3'
+        concat_list = work_dir / 'narration_list.txt'
+        concat_list.write_text(''.join(f"file '{p}'\n" for p in seg_paths), encoding='utf-8')
+        try:
+            subprocess.run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', str(concat_list),
+                            '-c:a', 'libmp3lame', '-b:a', '128k', str(full_narration)],
+                           capture_output=True, text=True, timeout=60)
+            if full_narration.is_file() and full_narration.stat().st_size > 0:
+                narration_path = full_narration
+        except Exception:
+            narration_path = None
+
+    # 3.5 合并逐句字幕（跟随口播逐句显示，单行）
+    full_srt = None
+    if narration_ok and seg_srt_paths and any(p.is_file() for p in seg_srt_paths):
+        full_srt = work_dir / 'narration_full.srt'
+        try:
+            _merge_srt_files(seg_srt_paths, seg_durations, full_srt)
+            if not full_srt.is_file() or full_srt.stat().st_size == 0:
+                full_srt = None
+        except Exception:
+            full_srt = None
+
+    # 4. BGM 自动选曲（已支持降级）
+    bgm = _video_bgm(req.title, req.body)
+
+    # 5. 构建 storyboard：每镜时长 = 对应段口播时长（音画同步），无口播则 3s
+    #    不设 caption——字幕改用 TTS 生成的逐句 SRT（跟随口播逐句显示，单行）
+    shots = []
+    for i, img in enumerate(images):
+        dur = max(1.5, seg_durations[i]) if i < len(seg_durations) and seg_durations[i] > 0 else 3.0
+        shots.append({'image': str(img), 'duration': round(dur, 2), 'motion': 'static'})
+    storyboard = {
+        'size': '1080x1920',
+        'image_motion': 'static',
+        'shots': shots,
+    }
+    if narration_path:
+        storyboard['narration'] = str(narration_path)
+    if full_srt:
+        storyboard['subtitle'] = str(full_srt)
+    if bgm:
+        storyboard['bgm'] = str(bgm)
+        storyboard['bgm_volume'] = 0.35  # BGM 明显但不盖口播
+    sb_path = work_dir / 'storyboard.json'
+    sb_path.write_text(json.dumps(storyboard, ensure_ascii=False), encoding='utf-8')
+
+    # 6. 调 assemble.py 合成
+    assemble_script = PROJECT_ROOT / 'skills' / 'openclaw' / 'auto-short-video' / 'scripts' / 'assemble.py'
+    cmd = [sys.executable, str(assemble_script), 'assemble', '--storyboard', str(sb_path), '-o', str(out)]
+    try:
+        proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True,
+                              timeout=900, env=_publish_env())
+    except subprocess.TimeoutExpired:
+        return {'status': 'timeout', 'message': '视频生成超时（>900s）', 'verified': False}
+    if proc.returncode != 0 or not out.is_file() or out.stat().st_size == 0:
+        detail = '\n'.join((proc.stderr or proc.stdout or '').strip().splitlines()[-4:])[:500]
+        return {'status': 'fail', 'message': detail or '视频生成失败', 'verified': False,
+                'returncode': proc.returncode, 'stdout': (proc.stdout or '')[-2000:], 'stderr': (proc.stderr or '')[-2000:]}
+
+    # 清理工作目录
+    try:
+        shutil.rmtree(work_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+    if rel not in req.media:
+        req.media.append(rel)
+    parts = [f'口播({narration_source})' if narration_path else '无口播',
+            f'BGM {bgm.name}' if bgm else '静音']
+    return {'status': 'verified', 'message': f'视频版已生成 · {" · ".join(parts)}',
+            'verified': True, 'media_path': rel, 'returncode': proc.returncode,
+            'stdout': (proc.stdout or '')[-2000:], 'stderr': (proc.stderr or '')[-2000:]}
+
+
+def _job_path(job_id: str) -> Path:
+    return JOBS_DIR / f'{job_id}.json'
+
+
+def _save_job(job: dict) -> None:
+    try:
+        JOBS_DIR.mkdir(parents=True, exist_ok=True)
+        p = _job_path(job['id'])
+        tmp = p.with_suffix('.json.tmp')
+        job['updated_at'] = time.time()
+        tmp.write_text(json.dumps(job, ensure_ascii=False), encoding='utf-8')
+        os.replace(tmp, p)
+    except Exception:
+        pass
+
+
+def _load_job(job_id: str) -> dict | None:
+    p = _job_path(job_id)
+    if not p.is_file():
+        return None
+    try:
+        return json.loads(p.read_text(encoding='utf-8'))
+    except Exception:
+        return None
+
+
+def _list_jobs() -> list[dict]:
+    if not JOBS_DIR.is_dir():
+        return []
+    jobs = []
+    for p in JOBS_DIR.glob('*.json'):
+        try:
+            jobs.append(json.loads(p.read_text(encoding='utf-8')))
+        except Exception:
+            pass
+    jobs.sort(key=lambda j: j.get('created_at', 0), reverse=True)
+    return jobs
+
+
+def _run_job(job_id: str, req: PublishJobRequest) -> None:
+    """后台线程：媒体(视频版)生成与平台发布并行——视频版在独立线程立即开跑，
+    图文/文章平台不等它直接发；仅 VIDEO_ONLY 平台（视频号/B站）在轮到时 join 等待视频结果。
+    每步更新 job 文件（_save_lock 保护两线程对 job dict 的并发写）。"""
+    job = _load_job(job_id)
+    if not job:
+        return
+    _save_lock = threading.Lock()
+
+    def save() -> None:
+        with _save_lock:
+            _save_job(job)
+
+    def run_task(task: dict, treq: PublishJobRequest) -> None:
+        """执行单个任务并回写状态（媒体/平台通用）。treq 为该任务使用的请求对象。"""
+        if task['status'] == 'skipped':
+            return
+        task['status'] = 'preparing' if task['type'] == 'media' else 'connecting' if task['type'] == 'wechatsync' else 'publishing'
+        task['message'] = '正在生成视频版…' if task['type'] == 'media' else '正在连接扩展…' if task['type'] == 'wechatsync' else '发布中…'
+        task['started_at'] = time.time()
+        task['attempt'] = int(task.get('attempt') or 0) + 1
+        save()
+        try:
+            if task['type'] == 'media':
+                result = _generate_publish_video(job_id, treq)
+                if result.get('media_path'):
+                    job['generated_media'] = [result['media_path']]
+            elif task['type'] == 'wechatsync':
+                task['status'] = 'publishing'
+                task['message'] = '正在提交草稿…'
+                save()
+                result = _run_wechatsync_single(task['platform'], treq)
+            else:
+                def report_progress(status: str, message: str) -> None:
+                    task['status'] = status
+                    task['message'] = message
+                    save()
+
+                ok, msg = _run_native_publish(task['platform'], treq, report_progress,
+                                              lambda: bool(_JOB_CANCEL_FLAG.get(job_id)))
+                result = {'status': 'ok' if ok else 'fail', 'message': msg, 'verified': ok}
+            task.update(result)
+        except Exception as e:
+            task['status'] = 'fail'
+            task['message'] = str(e)[:500]
+            task['verified'] = False
+        task['finished_at'] = time.time()
+        save()
+
+    tasks = job['tasks']
+    media_tasks = [t for t in tasks if t['type'] == 'media' and t['status'] != 'skipped']
+    other_tasks = [t for t in tasks if t['type'] != 'media']
+
+    # 原始媒体快照：媒体线程会向 req.media 追加生成的视频，图文/文章平台须用快照，
+    # 否则发布中途 req.media 多出视频会导致「图文单」变「视频单」（如抖音 publish→publish-video）
+    orig_media = list(req.media or [])
+    req_orig = req.model_copy(update={'media': orig_media})
+
+    # 视频版生成：有媒体任务则在独立线程立即并行开跑
+    media_thread = None
+    if media_tasks and not _JOB_CANCEL_FLAG.get(job_id):
+        def _media_worker() -> None:
+            for t in media_tasks:
+                if _JOB_CANCEL_FLAG.get(job_id):
+                    t['status'] = 'cancelled'
+                    t['message'] = '已停止'
+                    t['finished_at'] = time.time()
+                    save()
+                    continue
+                run_task(t, req)
+        media_thread = threading.Thread(target=_media_worker, daemon=True)
+        media_thread.start()
+    elif media_tasks:
+        for t in media_tasks:
+            t['status'] = 'cancelled'
+            t['message'] = '已停止'
+            t['finished_at'] = time.time()
+        save()
+
+    # 本次请求自带的视频（生成任务开始前快照）：VIDEO_ONLY 平台没有它就得等生成结果
+    _, req_videos = _publish_media(req)
+
+    for task in other_tasks:
+        if _JOB_CANCEL_FLAG.get(job_id):
+            task['status'] = 'cancelled'
+            task['message'] = '已停止'
+            task['finished_at'] = time.time()
+            save()
+            continue
+        if task['status'] == 'skipped':
+            continue
+        # VIDEO_ONLY 平台或抖音（自动转视频）且本次未直接给视频 → 等并行视频生成出结果再发
+        if (task['type'] == 'native' and task['platform'] in VIDEO_ONLY_PUBLISH
+                and not req_videos and media_thread is not None):
+            task['status'] = 'publishing'
+            task['message'] = '等待视频版生成…'
+            task['started_at'] = time.time()
+            save()
+            media_thread.join()
+            media_thread = None
+            mt = media_tasks[0]
+            if mt['status'] not in ('verified', 'ok') or not job.get('generated_media'):
+                task['status'] = 'fail'
+                task['message'] = f"视频版生成失败，未执行发布（{mt.get('message', '')[:120]}）"
+                task['verified'] = False
+                task['finished_at'] = time.time()
+                save()
+                continue
+            # 生成成功：req.media 已被 _generate_publish_video 追加视频路径，继续正常发布
+            run_task(task, req)
+            continue
+        # 抖音自动转视频：只有图片时等视频生成完成，用视频发布（带口播+BGM）
+        if (task['type'] == 'native' and task['platform'] == 'douyin'
+                and not req_videos and media_thread is not None):
+            task['status'] = 'publishing'
+            task['message'] = '等待图文转视频（口播+BGM）…'
+            task['started_at'] = time.time()
+            save()
+            media_thread.join()
+            media_thread = None
+            mt = media_tasks[0]
+            if mt['status'] not in ('verified', 'ok') or not job.get('generated_media'):
+                task['status'] = 'fail'
+                task['message'] = f"图文转视频失败，未执行发布（{mt.get('message', '')[:120]}）"
+                task['verified'] = False
+                task['finished_at'] = time.time()
+                save()
+                continue
+            # 生成成功：req.media 已被 _generate_publish_video 追加视频路径，继续正常发布
+            run_task(task, req)
+            continue
+        # 图文/文章/同步平台用原始媒体快照的请求副本执行，不受并行生成的视频影响
+        run_task(task, req_orig)
+
+    if media_thread is not None:
+        media_thread.join()
+    job = _load_job(job_id)
+    if job:
+        job['status'] = 'cancelled' if _JOB_CANCEL_FLAG.get(job_id) else 'done'
+        _save_job(job)
+    _JOB_CANCEL_FLAG.pop(job_id, None)
+
+
+def _run_native_publish(platform: str, req: PublishJobRequest, on_progress=None, is_cancelled=None) -> tuple[bool, str]:
+    """执行单个原生平台发布，返回 (ok, message)。复用现有 cmd 构建逻辑。"""
+    cfg = LOGIN_RUNNERS.get(platform)
+    if not cfg:
+        return False, '未知平台'
+    body = _publish_content(req, platform)
+    title = req.title.strip() or body[:20]
+    imgs, vids = [], []
+    for rel in req.media or []:
+        full = _safe_output_path(rel)
+        if not full:
+            continue
+        ext = full.suffix.lower()
+        if ext in VIDEO_EXTS:
+            vids.append(str(full))
+        elif ext in IMAGE_EXTS:
+            imgs.append(str(full))
+    py = sys.executable
+    if platform in VIDEO_ONLY_PUBLISH and not vids:
+        return False, '视频版不可用，未执行发布'
+    if platform == 'xiaohongshu':
+        base = [py, str(SHARED_SCRIPTS / 'xhs_publish.py')]
+        cmd = base + ['publish', '--no-proxy', '--images', ','.join(imgs)] if imgs else base + ['publish-video', '--no-proxy', '--video', vids[0]]
+        cmd += ['--title', title, '--content', body, '--tags', req.tags, '--exec']
+    elif platform == 'bilibili':
+        bili_tag = req.tags.replace('#', '').replace('，', ',').strip().strip(',') or '日常'
+        cmd = ['biliup', '-u', str(PROJECT_ROOT / 'cookies.json'), 'upload', vids[0],
+               '--title', title[:80], '--tid', '36', '--copyright', '1', '--tag', bili_tag]
+        if body:
+            cmd += ['--desc', body[:2000]]
+    elif platform == 'douyin':
+        base = [py, str(SHARED_SCRIPTS / 'douyin_publish.py')]
+        cmd = base + ['publish-video', '--video', vids[0]] if vids else base + ['publish', '--images', ','.join(imgs)]
+        cmd += ['--title', title, '--content', body, '--tags', req.tags, '--exec']
+        PUBLISH_DIR.mkdir(parents=True, exist_ok=True)
+        status_file = PUBLISH_DIR / 'douyin.json'
+        code_file = PUBLISH_DIR / 'douyin.code'
+        cmd += ['--status-file', str(status_file), '--sms-code-file', str(code_file)]
+    else:
+        cmd = [py, str(SHARED_SCRIPTS / 'web_publisher.py'), 'publish',
+               '--platform', cfg['wp'], '--title', title, '--desc', body,
+               '--tags', req.tags, '--exec']
+        media = vids[0] if platform in VIDEO_ONLY_PUBLISH and vids else (imgs[0] if imgs else (vids[0] if vids else None))
+        if media:
+            cmd += ['--media', media]
+    stdout = stderr = ''
+    try:
+        if platform == 'douyin':
+            _write_publish_status(status_file, 'starting', '发布中…')
+            try:
+                code_file.unlink()
+            except OSError:
+                pass
+            proc = subprocess.Popen(cmd, cwd=str(PROJECT_ROOT), env=_publish_env(),
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            deadline = time.monotonic() + 600
+            last_status = ('', '')
+            while proc.poll() is None:
+                if is_cancelled and is_cancelled():
+                    proc.terminate()
+                    proc.communicate()
+                    return False, '发布已停止'
+                state = _read_publish_status(platform)
+                current = (state['state'], state['message'])
+                if current != last_status and on_progress and state['state'] in ('sms_required', 'verifying'):
+                    on_progress(state['state'], state['message'])
+                last_status = current
+                if time.monotonic() >= deadline:
+                    proc.kill()
+                    proc.communicate()
+                    return False, '发布超时（>600s）'
+                time.sleep(0.5)
+            stdout, stderr = proc.communicate()
+        else:
+            proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), env=_publish_env(),
+                                  capture_output=True, text=True, timeout=600)
+            stdout, stderr = proc.stdout or '', proc.stderr or ''
+    except subprocess.TimeoutExpired:
+        return False, '发布超时（>600s）'
+    ok = proc.returncode == 0
+    tail = (stderr or stdout).strip().splitlines()
+    detail = '\n'.join(tail[-4:])[:200]
+    # 记日志
+    try:
+        with (OUTPUTS_DIR / '_publish.log').open('a', encoding='utf-8') as lf:
+            lf.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} {platform}(job) rc={proc.returncode} =====\n")
+            lf.write('CMD: ' + ' '.join(cmd) + '\nSTDOUT:\n' + stdout[-1000:] + '\nSTDERR:\n' + stderr[-1000:] + '\n')
+    except Exception:
+        pass
+    if ok:
+        try:
+            items = _read_schedule()
+            items.append({'id': uuid.uuid4().hex[:12], 'title': title,
+                          'date': time.strftime('%Y-%m-%d'), 'platform': cfg['name'],
+                          'time': time.strftime('%H:%M'), 'status': 'published',
+                          'note': body[:200], 'kind': 'content', 'source': 'publish-job'})
+            _write_schedule(items)
+        except Exception:
+            pass
+    return ok, '已发布 ✅' if ok else (detail or '发布失败')
+
+
+def _run_wechatsync_single(platform: str, req: PublishJobRequest) -> dict:
+    """执行单个 Wechatsync 平台同步，并仅在有平台级证据时标为已验证。"""
+    from urllib.parse import quote
+    data = _load_wechat_yaml()
+    token = (data.get('integrations') or {}).get('wechatsync_mcp_token', '') or ''
+    if not token:
+        return {'status': 'fail', 'message': '未配置 Wechatsync Token', 'verified': False}
+    cli_path = shutil.which('wechatsync')
+    if not cli_path:
+        return {'status': 'fail', 'message': '未安装 wechatsync CLI', 'verified': False}
+    body = _publish_content(req, platform)
+    public_base = (os.environ.get('EASEL_PUBLIC_URL') or 'http://localhost:7860').rstrip('/')
+    images, _ = _publish_media(req)
+    image_lines = []
+    for image in images:
+        try:
+            rel = image.relative_to(OUTPUTS_DIR.resolve())
+        except ValueError:
+            continue
+        image_lines.append(f'![图片]({public_base}/api/media/{quote(str(rel))})')
+    markdown = f"# {req.title}\n\n{body}" if req.title else body
+    if req.tags.strip():
+        markdown += f"\n\n{req.tags.strip()}"
+    if image_lines:
+        markdown += '\n\n' + '\n\n'.join(image_lines)
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
+        f.write(markdown)
+        md_path = f.name
+    try:
+        cmd = [cli_path, 'sync', md_path, '-p', platform]
+        if req.title:
+            cmd.extend(['-t', req.title])
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120,
+                           env={**os.environ, 'WECHATSYNC_TOKEN': token})
+        stdout, stderr = (r.stdout or '')[-4000:], (r.stderr or '')[-4000:]
+        combined = f'{stdout}\n{stderr}'
+        if r.returncode != 0:
+            lines = combined.strip().splitlines()
+            return {'status': 'fail', 'message': (lines[-1][:300] if lines else '同步失败'),
+                    'verified': False, 'returncode': r.returncode, 'stdout': stdout, 'stderr': stderr}
+        parsed = None
+        for line in reversed(stdout.splitlines()):
+            try:
+                parsed = json.loads(line)
+                break
+            except (json.JSONDecodeError, TypeError):
+                continue
+        url = ''
+        if isinstance(parsed, dict):
+            url = str(parsed.get('draft_url') or parsed.get('url') or parsed.get('draftUrl') or '')
+            success = parsed.get('success') is True or parsed.get('ok') is True or parsed.get('verified') is True
+            if success:
+                return {'status': 'verified', 'message': '平台已确认草稿', 'verified': True,
+                        'draft_url': url, 'draft_id': str(parsed.get('draft_id') or parsed.get('draftId') or ''),
+                        'returncode': r.returncode, 'stdout': stdout, 'stderr': stderr}
+        url_match = re.search(r'https?://[^\s"\']+', combined)
+        if url_match and re.search(r'(草稿|draft).{0,24}(成功|created|saved)|(成功|created|saved).{0,24}(草稿|draft)', combined, re.I):
+            return {'status': 'verified', 'message': '平台已确认草稿', 'verified': True,
+                    'draft_url': url_match.group(0), 'returncode': r.returncode, 'stdout': stdout, 'stderr': stderr}
+        return {'status': 'submitted', 'message': '扩展已接收，待在平台草稿箱确认', 'verified': False,
+                'returncode': r.returncode, 'stdout': stdout, 'stderr': stderr}
+    except subprocess.TimeoutExpired:
+        return {'status': 'timeout', 'message': '同步超时（120s）', 'verified': False}
+    except Exception as e:
+        return {'status': 'fail', 'message': str(e)[:300], 'verified': False}
+    finally:
+        try:
+            os.unlink(md_path)
+        except OSError:
+            pass
+
+
+@app.post("/api/publish/jobs")
+async def api_create_publish_job(req: PublishJobRequest):
+    """创建异步发布 Job：立即返回 job_id，后台串行执行各平台。"""
+    if not req.native_platforms and not req.wechatsync_platforms:
+        raise HTTPException(400, '请至少选择一个平台')
+    job_id = f'job_{int(time.time())}_{uuid.uuid4().hex[:6]}'
+    images, videos = _publish_media(req)
+    tasks = []
+    # 图文转视频生成：VIDEO_ONLY 平台（视频号/B站）强制需要；抖音在只有图片时也自动转视频（带口播+BGM）
+    needs_video_gen = (any(pf in VIDEO_ONLY_PUBLISH for pf in req.native_platforms)
+                       or 'douyin' in req.native_platforms) and not videos and images
+    if needs_video_gen:
+        tasks.append({'platform': 'video-vertical', 'label': '图文视频版', 'type': 'media',
+                      'status': 'pending', 'message': '待由图片生成 9:16 视频（口播+BGM）', 'started_at': None, 'finished_at': None})
+    # 原生平台：先分类（可发布/跳过），跳过的直接标记 skipped
+    for pf in req.native_platforms:
+        cfg = LOGIN_RUNNERS.get(pf)
+        if not cfg:
+            continue
+        label = cfg['name']
+        if not _account_logged_in(pf, cfg):
+            tasks.append({'platform': pf, 'label': label, 'type': 'native',
+                          'status': 'skipped', 'message': '未登录', 'started_at': None, 'finished_at': None})
+            continue
+        if pf in MEDIA_REQUIRED and not req.media:
+            tasks.append({'platform': pf, 'label': label, 'type': 'native',
+                          'status': 'skipped', 'message': '需附带媒体', 'started_at': None, 'finished_at': None})
+            continue
+        if pf in VIDEO_ONLY_PUBLISH and not videos and not images:
+            tasks.append({'platform': pf, 'label': label, 'type': 'native',
+                          'status': 'skipped', 'message': '需提供图片或视频', 'started_at': None, 'finished_at': None})
+            continue
+        tasks.append({'platform': pf, 'label': label, 'type': 'native',
+                      'status': 'pending', 'message': '排队中', 'started_at': None, 'finished_at': None})
+    # Wechatsync 平台：逐平台一个 task
+    ws_labels = {'toutiao': '头条', 'juejin': '掘金', 'csdn': 'CSDN', 'jianshu': '简书',
+                 'weibo': '微博', 'segmentfault': 'SF', 'oschina': '开源中国',
+                 'cnblogs': '博客园', '51cto': '51CTO', 'infoq': 'InfoQ',
+                 'baijiahao': '百家号', 'sohu': '搜狐号', 'douban': '豆瓣'}
+    for pf in req.wechatsync_platforms:
+        tasks.append({'platform': pf, 'label': ws_labels.get(pf, pf), 'type': 'wechatsync',
+                      'status': 'pending', 'message': '排队中', 'started_at': None, 'finished_at': None})
+    job = {
+        'id': job_id,
+        'created_at': time.time(),
+        'updated_at': time.time(),
+        'status': 'running',
+        'title': req.title,
+        'request': req.model_dump(),
+        'tasks': tasks,
+    }
+    _save_job(job)
+    threading.Thread(target=_run_job, args=(job_id, req), daemon=True).start()
+    return job
+
+
+@app.get("/api/publish/jobs")
+async def api_list_publish_jobs():
+    """列出所有发布 Job（用于页面刷新后恢复进度）。"""
+    return _list_jobs()[:20]
+
+
+@app.get("/api/publish/jobs/{job_id}")
+async def api_get_publish_job(job_id: str):
+    """查询单个 Job 状态。"""
+    job = _load_job(job_id)
+    if not job:
+        raise HTTPException(404, 'Job 不存在')
+    return job
+
+
+@app.post("/api/publish/jobs/{job_id}/cancel")
+async def api_cancel_publish_job(job_id: str):
+    """取消发布 Job：设置取消标志，后台线程在下一个平台前停止。"""
+    _JOB_CANCEL_FLAG[job_id] = True
+    job = _load_job(job_id)
+    if job:
+        job['status'] = 'cancelling'
+        _save_job(job)
+    return {'ok': True}
 
 
 class ProfileBuildRequest(BaseModel):

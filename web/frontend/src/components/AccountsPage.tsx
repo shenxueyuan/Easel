@@ -10,7 +10,7 @@ import type {
   AccountItem, AccountWhoami,
   WechatMpConfig, WechatMpAccount, WechatsyncStatus, WechatsyncExtensionStatus,
 } from '../lib/api';
-import { getWhoamiCache, setWhoamiCache, verifyStale } from '../lib/whoami';
+import { setWhoamiCache } from '../lib/whoami';
 
 type QRState = {
   platform: string;
@@ -20,6 +20,9 @@ type QRState = {
   qr: string;          // outputs 相对路径
   qrTs?: number;       // 二维码文件 mtime，作 img 缓存键：码刷新一次就变，避免看到过期旧码
 };
+
+// 登录时后端会弹出可操作的独立浏览器窗口的平台：弹窗不再塞二维码截图，只提示去窗口操作
+const HEADED_LOGIN_PLATFORMS = new Set(['weixin-channels', 'zhihu']);
 
 const STATE_LABEL: Record<string, string> = {
   starting: '启动中…',
@@ -57,13 +60,13 @@ const PLATFORM_GUIDE: Record<string, { method: string; tip: string; contentType:
     contentType: '视频 / 图文',
   },
   'weixin-channels': {
-    method: '手机微信扫码',
-    tip: '用个人微信扫码登录视频号助手。与公众号是独立账号，不通用。',
+    method: '微信快捷登录 / 手机扫码',
+    tip: '登录时会打开可操作的浏览器窗口，可点微信快捷登录或切换其他账号扫码。与公众号不通用。',
     contentType: '视频（竖版 9:16）',
   },
   'zhihu': {
-    method: '手机知乎 App 或微信扫码',
-    tip: '支持专栏文章和问答回答两种发布模式。',
+    method: '独立浏览器窗口登录（扫码 / 账号密码）',
+    tip: '登录时会打开可操作的浏览器窗口，在窗口内扫码或用账号密码登录均可。支持专栏文章和问答回答两种发布模式。',
     contentType: '专栏文章 / 问答回答',
   },
   'bilibili': {
@@ -98,8 +101,8 @@ export default function AccountsPage() {
   const [smsBusy, setSmsBusy] = useState(false);
   const [smsErr, setSmsErr] = useState('');
   const [showGuide, setShowGuide] = useState(false);   // 一稿多发配置指南折叠
-  // whoami 结果缓存到 localStorage：打开页面秒显示昵称/头像，不必每次都起浏览器校验
-  const [whoami, setWhoami] = useState<Record<string, AccountWhoami | 'loading'>>(() => getWhoamiCache());
+  // whoami 只在用户主动校验或登录成功后执行，避免开页探测反复打开持久化 Profile
+  const [whoami, setWhoami] = useState<Record<string, AccountWhoami | 'loading'>>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const aliveRef = useRef(true);
   const qrPlatformRef = useRef('');   // 当前登录中的平台，供 submitSms 稳定引用
@@ -119,23 +122,15 @@ export default function AccountsPage() {
       });
   }, []);
 
-  // 打开页面：拉「快」状态（读 status.json，不起浏览器），随后后台自愈——对缓存缺失/过期的
-  // 浏览器平台逐个真校验（whoami），结果到了刷新 UI，并令陈旧的假阴性缓存被真值覆盖。
+  // 打开页面只读取持久化登录标记；真实网络校验由用户点击「校验账号」触发。
   const load = useCallback(() => {
     setErr('');
     fetchAccounts()
       .then((list) => {
         if (!aliveRef.current) return;
         setAccounts(list);
-        const targets = list
-          .filter((a) => a.supported && a.backend !== 'biliup')
-          .map((a) => a.platform);
-        verifyStale(targets, {
-          alive: () => aliveRef.current,
-          onUpdate: (platform, r) => setWhoami((w) => ({ ...w, [platform]: r })),
-        });
       })
-      .catch(() => setErr('加载账号状态失败'));
+      .catch((error) => setErr(error instanceof Error ? `加载账号状态失败：${error.message}` : '加载账号状态失败'));
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -225,11 +220,20 @@ export default function AccountsPage() {
     return a.loggedIn;
   };
 
+  // 未登录原因：whoami 刚判 false → 凭据已失效；否则看后端标记（未登录过 / 已过期 / 未完成…）
+  const notLoggedReason = (a: AccountItem): string => {
+    const w = whoami[a.platform];
+    if (w && w !== 'loading' && !w.loggedIn) return '登录凭据已失效，需重新登录';
+    return a.loginReason || '未登录';
+  };
+
   const badge = (a: AccountItem) => {
     if (!a.supported) return <span className="badge">待重写</span>;
     if (whoami[a.platform] === 'loading') return <span className="badge">校验中…</span>;
     if (effLoggedIn(a)) return <span className="badge badge-ok">✓ 已登录</span>;
-    return <span className="badge">未登录</span>;
+    return <span className="badge badge-warn" title={notLoggedReason(a)}>
+      {a.loginState === 'never' ? '未登录过' : '未登录'}
+    </span>;
   };
 
   return (
@@ -337,7 +341,11 @@ export default function AccountsPage() {
                 </div>
               )}
               {!logged && (
-                <div className="account-card-note">{a.note ? a.note : `后端：${a.backend}`}</div>
+                <div className="account-card-note">
+                  <span style={{ color: 'var(--amber)' }}>{notLoggedReason(a)}</span>
+                  {a.loginTs ? `（上次登录：${new Date(a.loginTs * 1000).toLocaleDateString('zh-CN')}）` : ''}
+                  <br />{a.note ? a.note : `后端：${a.backend}`}
+                </div>
               )}
 
               {/* 登录方式说明 */}
@@ -417,6 +425,12 @@ export default function AccountsPage() {
                   disabled={smsBusy} onClick={submitSms}>
                   {smsBusy ? '提交中…' : '提交验证码'}
                 </button>
+              </div>
+            ) : qr.state === 'qr_ready' && HEADED_LOGIN_PLATFORMS.has(qr.platform) ? (
+              <div style={{ padding: '30px 20px', fontSize: 14, lineHeight: 1.8, color: 'var(--text-secondary)' }}>
+                <div style={{ fontSize: 40, marginBottom: 10 }}>🖥️</div>
+                已弹出 <b>{qr.name}</b> 登录窗口<br />
+                请在该窗口中完成登录，此处会自动检测登录结果
               </div>
             ) : qr.state === 'qr_ready' && qr.qr ? (
               <img className="qr-img" src={`${mediaUrl(qr.qr)}?v=${qr.qrTs || qrNonce}`} alt="登录二维码" />
@@ -873,10 +887,8 @@ function WechatsyncSection() {
               fontSize: 12,
               color: status.ready ? 'var(--green)' : 'var(--text-secondary)' }}>
               {status.ready
-                ? '✓ Wechatsync 环境就绪！可在对话页说「同步到头条、掘金」来使用。'
-                : status.token_configured && status.cli_installed && !status.extension_connected
-                  ? '⚠ Token 和 CLI 已配置，但 Chrome 扩展未连接。请在 Chrome 里加载扩展并开启 MCP 连接。'
-                  : '⚠ 尚未就绪 — 按顺序完成上述步骤后即可使用。'}
+                ? '✓ Token 和 CLI 已就绪。Chrome 扩展会在执行同步命令时按需连接，请保持扩展中的 MCP 开关开启。'
+                : '⚠ 尚未就绪 — 按顺序完成上述步骤后即可使用。'}
             </div>
           </div>
         )}

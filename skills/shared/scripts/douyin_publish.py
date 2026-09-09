@@ -287,12 +287,57 @@ def _switch_tab(page, kind: str):
 
 
 def _upload_files(page, paths: list[str]):
-    """隐藏 file input 塞文件（比拦截 filechooser 稳）。REF _clickAndChooseFile。"""
-    fi = page.query_selector(SELECTORS["file_input"]) or page.query_selector(SELECTORS["file_input_fallback"])
+    """隐藏 file input 塞文件（比拦截 filechooser 稳）。REF _clickAndChooseFile。
+
+    抖音上传页同时存在视频和图片两个 file input（切 tab 不卸载），必须按上传文件
+    类型选对应的控件：图片选 accept 含 image 的，视频选 accept 含 video 的。
+    选错控件（如图文模式选到视频控件）会导致 set_input_files 不触发上传、
+    编辑器永远不就绪。
+    """
+    is_image = any(Path(p).suffix.lower() in (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif") for p in paths)
+    accept_kw = "image" if is_image else "video"
+    # 优先匹配 accept 含 image/video 的 file input；fallback 到原选择器
+    fi = page.query_selector(f'input[type="file"][accept*="{accept_kw}"]')
+    if not fi:
+        fi = page.query_selector(SELECTORS["file_input"]) or page.query_selector(SELECTORS["file_input_fallback"])
     if not fi:
         _die("未找到上传 file input（检查 SELECTORS.file_input）")
-    fi.set_input_files(paths)
-    page.wait_for_timeout(1000)
+    if len(paths) <= 1 or fi.get_attribute("multiple") is not None:
+        fi.set_input_files(paths)
+        page.wait_for_timeout(1000)
+        return
+    # 控件不支持 multiple 时逐张上传，每次重新定位（避免 ElementHandle 失效）
+    for path in paths:
+        current = page.query_selector(f'input[type="file"][accept*="{accept_kw}"]') or \
+            page.query_selector(SELECTORS["file_input"]) or page.query_selector(SELECTORS["file_input_fallback"])
+        if not current:
+            _die("上传图片时未找到 file input")
+        current.set_input_files(path)
+        page.wait_for_timeout(800)
+
+
+def _editor_title_input(page):
+    return page.query_selector(SELECTORS["title_input"]) or page.query_selector('input[placeholder*="标题"]')
+
+
+def _wait_image_editor(page, timeout_s: int = 90):
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if _editor_title_input(page):
+            page.wait_for_timeout(1200)
+            return
+        page.wait_for_timeout(1000)
+    # 增强诊断：输出当前 URL、file input 数量和 accept 属性，便于定位是上传没触发还是编辑器渲染问题
+    try:
+        inputs = page.query_selector_all('input[type="file"]')
+        input_info = [f"accept={fi.get_attribute('accept') or ''} multiple={fi.get_attribute('multiple') is not None}"
+                     for fi in inputs]
+    except Exception:
+        input_info = []
+    print(f"⚠️ 图片编辑器未就绪（{timeout_s}s）—— URL={page.url}", file=sys.stderr)
+    print(f"  file inputs: {input_info}", file=sys.stderr)
+    _dump_publish_fail(page, "image-editor-not-ready")
+    _die(f"图片上传后编辑器未就绪（{timeout_s}s）")
 
 
 def _wait_video_processed(page, timeout_s: int = 300):
@@ -301,7 +346,7 @@ def _wait_video_processed(page, timeout_s: int = 300):
     content/post/video 渲染完成的标志），再等上传条彻底消失。"""
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        if page.query_selector(SELECTORS["title_input"]) and not page.query_selector(SELECTORS["uploading"]):
+        if _editor_title_input(page) and not page.query_selector(SELECTORS["uploading"]):
             page.wait_for_timeout(1200)   # 编辑器完全可交互
             return
         page.wait_for_timeout(1500)
@@ -330,7 +375,7 @@ def _select_ai_cover(page):
 
 
 def _fill_title_desc(page, title: str, desc: str, tags: list[str]):
-    ti = page.query_selector(SELECTORS["title_input"])
+    ti = _editor_title_input(page)
     if not ti:
         _die("未找到标题输入框（检查 SELECTORS.title_input）")
     _human_type(page, ti, title)
@@ -1078,6 +1123,8 @@ def _publish(a, kind: str) -> int:
             _upload_files(page, media)
             if kind == "video":
                 _wait_video_processed(page)
+            else:
+                _wait_image_editor(page)
                 _select_ai_cover(page)
             _fill_title_desc(page, a.title, a.content or "", tags)
             _click_publish(page)

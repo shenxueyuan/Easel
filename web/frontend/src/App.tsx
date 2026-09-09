@@ -13,10 +13,11 @@ import IdeasPage from './components/IdeasPage';
 import PublishPage from './components/PublishPage';
 import BreakdownPage from './components/BreakdownPage';
 import UseCasesPage from './components/UseCasesPage';
+import BgmPage from './components/BgmPage';
 import SubNav from './components/SubNav';
 import OnboardingWizard from './components/OnboardingWizard';
 import WelcomeGuide, { shouldShowWelcome } from './components/WelcomeGuide';
-import { fetchStatus, fetchPersonas, streamChat, fetchLastTurn, stopChat } from './lib/api';
+import { fetchStatus, fetchPersonas, streamChat, fetchLastTurn, stopChat, resolvePublishDraft } from './lib/api';
 import type { PersonaItem, ThinkingMode, UploadedFile } from './lib/api';
 import { deleteSession as deleteRemoteSession } from './lib/api';
 import {
@@ -31,6 +32,30 @@ import {
 import type { ChatSession, ChatMessage, StreamState } from './lib/store';
 
 const ONBOARDING_SEEN_KEY = 'easel_onboarding_seen';
+const ACTIVE_PAGE_KEY = 'easel_active_page';
+const OPEN_PAGES_KEY = 'easel_open_pages';
+const PAGE_VALUES: Page[] = ['dashboard', 'chat', 'usecases', 'trends', 'ideas', 'calendar', 'publish', 'breakdown', 'skills', 'outputs', 'bgm', 'accounts', 'profile'];
+const PAGE_LABELS: Record<Page, string> = {
+  dashboard: '工作台', chat: '对话', usecases: '使用场景', trends: '热点雷达', ideas: '选题库',
+  calendar: '内容日历', publish: '发布中心', breakdown: '爆款拆解', skills: '技能库',
+  outputs: '内容库', bgm: 'BGM 曲库', accounts: '账号', profile: '画像',
+};
+
+function storedPage(): Page {
+  const page = localStorage.getItem(ACTIVE_PAGE_KEY) as Page | null;
+  return page && PAGE_VALUES.includes(page) ? page : 'dashboard';
+}
+
+function storedOpenPages(): Page[] {
+  try {
+    const pages = JSON.parse(localStorage.getItem(OPEN_PAGES_KEY) || '[]') as Page[];
+    const valid = pages.filter((page, index) => PAGE_VALUES.includes(page) && pages.indexOf(page) === index);
+    const active = storedPage();
+    return valid.includes(active) ? valid : [...valid, active];
+  } catch {
+    return [storedPage()];
+  }
+}
 
 function onboardingSeen(): boolean {
   const current = localStorage.getItem(ONBOARDING_SEEN_KEY);
@@ -46,7 +71,19 @@ function onboardingSeen(): boolean {
 }
 
 export default function App() {
-  const [currentPage, setCurrentPage] = useState<Page>('dashboard');
+  const [currentPage, setCurrentPageState] = useState<Page>(storedPage);
+  const [openPages, setOpenPages] = useState<Page[]>(storedOpenPages);
+  const setCurrentPage = useCallback((page: Page) => {
+    setOpenPages((pages) => pages.includes(page) ? pages : [...pages, page]);
+    setCurrentPageState(page);
+  }, []);
+  const closePage = useCallback((page: Page) => {
+    if (openPages.length === 1) return;
+    const index = openPages.indexOf(page);
+    const next = openPages.filter((item) => item !== page);
+    setOpenPages(next);
+    if (page === currentPage) setCurrentPageState(next[Math.max(0, index - 1)] || 'dashboard');
+  }, [currentPage, openPages]);
   const [personas, setPersonas] = useState<PersonaItem[]>([]);
   const [selectedPersona, setSelectedPersona] = useState('');
   const [sessions, setSessions] = useState<ChatSession[]>(() => loadSessions());
@@ -55,6 +92,11 @@ export default function App() {
   const [showRecommend, setShowRecommend] = useState(false);
   const [showWizard, setShowWizard] = useState(false);
   const [showWelcome, setShowWelcome] = useState(() => shouldShowWelcome());
+
+  useEffect(() => {
+    localStorage.setItem(ACTIVE_PAGE_KEY, currentPage);
+    localStorage.setItem(OPEN_PAGES_KEY, JSON.stringify(openPages));
+  }, [currentPage, openPages]);
 
   // 挂载时决定进哪个会话。规则：
   //  - 同一标签刷新（sessionStorage 记着本标签的会话）→ 直接续上（同标签不算冲突）。
@@ -543,8 +585,8 @@ export default function App() {
   }, []);
 
   // 流式生命周期在 App，页面切换随意——ChatPage 可自由卸载/重挂，回来从 props 读流式态即可。
-  const renderPage = () => {
-    switch (currentPage) {
+  const renderPage = (page: Page) => {
+    switch (page) {
       case 'dashboard':
         return (
           <DashboardPage
@@ -566,8 +608,9 @@ export default function App() {
               activeSession.id, userIndex, displayText, attachments, legacyAgentText, thinking,
             )}
             onNavigate={setCurrentPage}
-            onPublishContent={(title, body) => {
-              savePublishDraft({ title, body, platforms: [], overrides: {}, tags: '' });
+            onPreparePublish={async () => {
+              const context = activeSession.messages.map((message) => message.content).join('\n\n');
+              savePublishDraft(await resolvePublishDraft(context, activeSession.id, activeSession.created));
             }}
           />
         ) : null;
@@ -583,6 +626,8 @@ export default function App() {
         return <BreakdownPage persona={selectedPersona} />;
       case 'usecases':
         return <UseCasesPage onNavigate={setCurrentPage} />;
+      case 'bgm':
+        return <BgmPage />;
       case 'skills':
         return <SkillPage persona={selectedPersona} />;
       case 'outputs':
@@ -637,11 +682,28 @@ export default function App() {
         gatewayStatus={gatewayStatus}
       />
       <main className="main-content">
+        <div className="module-tabs" role="tablist" aria-label="已打开模块">
+          {openPages.map((page) => (
+            <button key={page} className={`module-tab ${page === currentPage ? 'active' : ''}`}
+              role="tab" aria-selected={page === currentPage} onClick={() => setCurrentPage(page)}>
+              <span>{PAGE_LABELS[page]}</span>
+              {openPages.length > 1 && (
+                <span className="module-tab-close" role="button" tabIndex={0} aria-label={`关闭${PAGE_LABELS[page]}`}
+                  onClick={(e) => { e.stopPropagation(); closePage(page); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); closePage(page); } }}>×</span>
+              )}
+            </button>
+          ))}
+        </div>
         {(['trends', 'ideas', 'calendar', 'publish', 'breakdown'] as Page[]).includes(currentPage) && (
           <SubNav current={currentPage} onNavigate={setCurrentPage} />
         )}
         <div className="page-host">
-          {renderPage()}
+          {openPages.map((page) => (
+            <div key={page} className={`module-page-panel ${page === currentPage ? 'active' : ''}`}>
+              {renderPage(page)}
+            </div>
+          ))}
         </div>
       </main>
 

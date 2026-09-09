@@ -19,7 +19,7 @@ interface ChatPageProps {
     thinking?: ThinkingMode,
   ) => void; // 重试：仅对最后一轮
   onNavigate?: (page: Page) => void;
-  onPublishContent?: (title: string, body: string) => void;
+  onPreparePublish?: () => Promise<void>;
 }
 
 // 空态推荐（贴合 ElephBrain AI 社媒创作场景）
@@ -36,8 +36,9 @@ function greeting(): string {
   return `${g}，想创作点什么？`;
 }
 
-export default function ChatPage({ session, stream, onSend, onStop, onResend, onNavigate, onPublishContent }: ChatPageProps) {
+export default function ChatPage({ session, stream, onSend, onStop, onResend, onNavigate, onPreparePublish }: ChatPageProps) {
   const [input, setInput] = useState('');
+  const [preparingPublish, setPreparingPublish] = useState(false);
   const [attachments, setAttachments] = useState<UploadedFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -146,29 +147,26 @@ export default function ChatPage({ session, stream, onSend, onStop, onResend, on
             <span className="thinking-toggle-dot" />
             {thinking === 'high' ? '深度思考' : '非深度思考'}
           </button>
-          {onNavigate && !isEmpty && (() => {
-            // 找最后一条 AI 消息
-            const lastAI = [...session.messages].reverse().find((m) => m.role === 'assistant' && m.content.trim());
-            if (!lastAI) return null;
-            return (
-              <button
-                className="composer-attach-btn"
-                onClick={() => {
-                  if (onPublishContent) {
-                    // 提取标题（第一个 # 标题）和正文
-                    const content = lastAI.content;
-                    const titleMatch = content.match(/^#\s+(.+)$/m);
-                    const title = titleMatch ? titleMatch[1] : '';
-                    onPublishContent(title, content);
-                  }
+          {onNavigate && onPreparePublish && !isEmpty && session.messages.some((m) => m.role === 'assistant' && m.content.trim()) && (
+            <button
+              className="composer-attach-btn"
+              disabled={isStreaming || preparingPublish}
+              onClick={async () => {
+                setPreparingPublish(true);
+                try {
+                  await onPreparePublish();
                   onNavigate('publish');
-                }}
-                title="把 AI 生成的内容带到发布页，选择平台后一键发布"
-              >
-                <IconPublish size={15} /> 去发布
-              </button>
-            );
-          })()}
+                } catch (e) {
+                  window.alert(e instanceof Error ? e.message : '没有找到可发布的结构化内容');
+                } finally {
+                  setPreparingPublish(false);
+                }
+              }}
+              title={isStreaming ? '请等待本轮内容和媒体生成完成' : '读取本次内容的发布包，自动带入标题、正文、标签和媒体'}
+            >
+              <IconPublish size={15} /> {preparingPublish ? '准备中…' : '去发布'}
+            </button>
+          )}
         </div>
         <span className="composer-hint">{isStreaming ? '生成中…' : 'Enter 发送 · Shift+Enter 换行'}</span>
         {isStreaming ? (
@@ -186,7 +184,14 @@ export default function ChatPage({ session, stream, onSend, onStop, onResend, on
       <div className="chat-page">
         <div className="chat-hero">
           <div className="chat-hero-brand">
-            <img src="./static/elephbrain-icon-transparent.png" alt="" />
+            <img src="/static/elephbrain-icon-transparent.png" alt="ElephBrain AI"
+              onError={(event) => {
+                const image = event.currentTarget;
+                if (!image.dataset.fallback) {
+                  image.dataset.fallback = '1';
+                  image.src = '/static/elephbrain-icon.png';
+                }
+              }} />
             <span>ElephBrain AI</span>
           </div>
           <h1 className="chat-hero-title">{greeting()}</h1>
