@@ -13,8 +13,9 @@
 |---|---|
 | 原始项目基线 | `7cfeca7465927277ae28c5eec471478e224e7017` |
 | 基线含义 | 用户首次提交 `7bb8b1d` 之前的项目版本 |
-| 已提交改造范围 | `7cfeca7..c2f2965`，共 25 个提交 |
-| 当前目标范围 | 上述 25 个提交 + 当前工作树未提交修改 |
+| 已提交改造范围 | `7cfeca7..b3900be`，共 33 个提交 |
+| 当前目标范围 | 上述 33 个提交（工作树已清空，全部已提交） |
+| 基线之后阶段划分 | `7cfeca7..c2f2965`（25 提交，产品主线落地）+ `c2f2965..b3900be`（8 提交，P0 缺口修复与文档化） |
 | 核心产品目标 | 把“需求描述 + 图片素材 → 高质量垂直领域视频”做到极致 |
 | 当前重点业务 | 企业新媒体、企业服务推广、电商商品视频、商品推广、商品详情 |
 
@@ -1781,3 +1782,711 @@ cd web/frontend && npm run build
 - 对话成片可进入发布中心；
 - 企业和电商方向有明确领域化扩展路径；
 - 自动测试、Skill 校验和前端构建全部通过。
+
+---
+
+# 附录 A：web/app.py API 端点全表（83 个）
+
+> 行号对应 `web/app.py` 当前 HEAD。重建时按此表逐个实现路由、请求模型与返回结构。
+
+## A.1 静态资源与状态
+
+| 行号 | 方法 | 路径 | 函数 | 说明 |
+|---|---|---|---|---|
+| 611 | GET | `/` | `index` | 返回 React `index.html`（无缓存） |
+| 620 | GET | `/onepage` | `onepage` | 单页落地页 |
+| 625 | GET | `/publish-sync-preview` | `publish_sync_preview` | 发布同步预览页 |
+| 639 | GET | `/assets/{path:path}` | `react_assets` | React 构建产物 |
+| 650 | GET | `/static/{path:path}` | `static_file` | `static/` 静态文件 |
+| 663 | GET | `/api/status` | `api_status` | 网关/技能/画像整体状态 |
+
+## A.2 画像（Personas）
+
+| 行号 | 方法 | 路径 | 函数 | 说明 |
+|---|---|---|---|---|
+| 668 | GET | `/api/personas` | `api_personas` | 列出所有画像 |
+| 673 | GET | `/api/persona/{name}` | `api_persona` | 画像聚合文本 |
+| 698 | GET | `/api/persona/{name}/files` | `api_persona_files` | 六维 `.md` 原文 |
+| 717 | PUT | `/api/persona/{name}/file` | `api_persona_file_save` | 保存单维文件（原子写） |
+| 729 | DELETE | `/api/persona/{name}` | `api_persona_delete` | 删除画像目录 |
+
+## A.3 技能与配置（Skills / Env）
+
+| 行号 | 方法 | 路径 | 函数 | 说明 |
+|---|---|---|---|---|
+| 742 | GET | `/api/skills` | `api_skills` | 列出所有 SKILL |
+| 747 | GET | `/api/skill/{name}` | `api_skill_detail` | SKILL 详情 + API 配置状态 |
+| 771 | POST | `/api/env` | `api_env_save` | 按白名单写 `.env` 并返回配置结果 |
+| 1505 | POST | `/api/skill` | `api_skill` | 执行指定 SKILL |
+
+## A.4 对话（Chat / SSE）
+
+| 行号 | 方法 | 路径 | 函数 | 说明 |
+|---|---|---|---|---|
+| 1008 | GET | `/api/chat/last/{session_id}` | `api_chat_last` | 取最近一轮结果（断线恢复） |
+| 1023 | GET | `/api/chat/jobs/{turn_id}/stream` | `api_chat_job_stream` | SSE 重放 + 实时 tail |
+| 1061 | POST | `/api/chat/stream` | `api_chat_stream` | SSE 真流式对话 |
+| 1459 | POST | `/api/chat/stop` | `api_chat_stop` | 终止当前会话 agent |
+| 1487 | POST | `/api/chat` | `api_chat` | 非流式对话（备选） |
+
+## A.5 产物与上传（Outputs / Media / Upload）
+
+| 行号 | 方法 | 路径 | 函数 | 说明 |
+|---|---|---|---|---|
+| 1518 | GET | `/api/outputs` | `api_outputs` | 产物目录树 |
+| 1523 | GET | `/api/output/{path:path}` | `api_output` | 文本产物内容（二进制标记 `isBinary`） |
+| 1536 | GET | `/api/media/{path:path}` | `api_media` | 原样输出媒体文件 |
+| 1587 | DELETE | `/api/output/{path:path}` | `api_output_delete` | 删除产物（系统目录受保护） |
+| 1604 | POST | `/api/upload` | `api_upload` | 上传附件到 session inbox |
+
+## A.6 账号与登录（Accounts / Login）
+
+| 行号 | 方法 | 路径 | 函数 | 说明 |
+|---|---|---|---|---|
+| 1732 | GET | `/api/accounts` | `api_accounts` | 平台账号状态摘要 |
+| 1743 | POST | `/api/login/{platform}` | `api_login_start` | 启动平台 QR 登录 |
+| 1794 | GET | `/api/login/{platform}/status` | `api_login_status` | 轮询登录状态 |
+| 1812 | POST | `/api/login/{platform}/sms` | `api_login_sms` | 回填短信验证码 |
+| 1829 | GET | `/api/accounts/{platform}/whoami` | `api_account_whoami` | 真校验登录态 + 昵称/头像 |
+| 1907 | POST | `/api/logout/{platform}` | `api_logout` | 退出并清理 profile |
+
+## A.7 微信公众号与 Wechatsync
+
+| 行号 | 方法 | 路径 | 函数 | 说明 |
+|---|---|---|---|---|
+| 1980 | GET | `/api/wechat-mp/config` | `api_wechat_mp_config` | 公众号配置（脱敏） |
+| 2019 | POST | `/api/wechat-mp/config` | `api_wechat_mp_save` | 新增/更新公众号配置 |
+| 2044 | DELETE | `/api/wechat-mp/config/{key}` | `api_wechat_mp_delete` | 删除公众号配置 |
+| 2062 | GET | `/api/wechatsync/check` | `api_wechatsync_check` | 自检 CLI/扩展/Token |
+| 2104 | POST | `/api/wechatsync/ping` | `api_wechatsync_ping` | 探测扩展连接 |
+| 2130 | GET | `/api/wechatsync/platforms` | `api_wechatsync_platforms` | 列出支持平台及登录态 |
+| 2168 | POST | `/api/wechatsync/cli` | `api_wechatsync_cli` | 安装/卸载 CLI |
+| 2191 | POST | `/api/wechatsync/skill` | `api_wechatsync_skill` | 一键安装 Wechatsync 技能 |
+| 2238 | GET | `/api/wechatsync/extension` | `api_wechatsync_extension_status` | 扩展 zip 状态 |
+| 2248 | POST | `/api/wechatsync/extension` | `api_wechatsync_extension_action` | 解压/下载扩展 |
+| 2281 | POST | `/api/wechatsync/token` | `api_wechatsync_token` | 保存 MCP Token |
+| 2302 | POST | `/api/wechatsync/sync` | `api_wechatsync_sync` | 同步 Markdown 到多平台草稿 |
+
+## A.8 数据分析、热点、排期、选题
+
+| 行号 | 方法 | 路径 | 函数 | 说明 |
+|---|---|---|---|---|
+| 2346 | GET | `/api/analytics/platforms` | `api_analytics_platforms` | 支持抓数据平台 |
+| 2356 | GET | `/api/analytics/{platform}` | `api_analytics` | 抓创作数据 |
+| 4917 | GET | `/api/trends` | `api_trends` | 平台热榜（5 分钟缓存） |
+| 4977 | GET | `/api/schedule` | `api_schedule_list` | 列出排期/事件 |
+| 4982 | POST | `/api/schedule` | `api_schedule_create` | 创建排期/事件 |
+| 5006 | PUT | `/api/schedule/{sid}` | `api_schedule_update` | 更新排期/事件 |
+| 5029 | DELETE | `/api/schedule/{sid}` | `api_schedule_delete` | 删除排期/事件 |
+| 5039 | GET | `/api/schedule/context` | `api_schedule_context` | 发布节奏/断更缺口/建议 |
+| 5081 | GET | `/api/ideas` | `api_ideas_list` | 列出选题库 |
+| 5086 | POST | `/api/ideas` | `api_ideas_create` | 新建选题 |
+| 5103 | PUT | `/api/ideas/{iid}` | `api_ideas_update` | 更新选题 |
+| 5119 | DELETE | `/api/ideas/{iid}` | `api_ideas_delete` | 删除选题 |
+
+## A.9 发布与画像构建
+
+| 行号 | 方法 | 路径 | 函数 | 说明 |
+|---|---|---|---|---|
+| 2458 | POST | `/api/publish/draft/resolve` | `api_publish_draft_resolve` | 匹配最合适发布草稿 |
+| 2558 | GET | `/api/publish/{platform}/status` | `api_publish_status` | 轮询异步发布状态 |
+| 2566 | POST | `/api/publish/{platform}/sms` | `api_publish_sms` | 回填发布短信码 |
+| 2579 | POST | `/api/publish/native/{platform}` | `api_publish` | 一键原生发布 |
+| 4629 | POST | `/api/publish/jobs` | `api_create_publish_job` | 创建异步多平台发布 Job |
+| 4685 | GET | `/api/publish/jobs` | `api_list_publish_jobs` | 列出最近 20 条 Job |
+| 4691 | GET | `/api/publish/jobs/{job_id}` | `api_get_publish_job` | 查询单个 Job |
+| 4700 | POST | `/api/publish/jobs/{job_id}/cancel` | `api_cancel_publish_job` | 取消 Job |
+| 4716 | POST | `/api/profile/build` | `api_profile_build` | 表单生成基线画像 + AI 增强 |
+| 4769 | GET | `/api/profile/build/status/{name}` | `api_profile_build_status` | 画像增强进度 |
+| 4842 | DELETE | `/api/session/{session_key}` | `api_delete_session` | 删除 OpenClaw session |
+
+## A.10 BGM、音色、数字人
+
+| 行号 | 方法 | 路径 | 函数 | 说明 |
+|---|---|---|---|---|
+| 2783 | GET | `/api/bgm` | `api_bgm_list` | 曲库列表 + 风格 + 试听 URL |
+| 2800 | POST | `/api/bgm` | `api_bgm_upload` | 上传到公共曲库 |
+| 2824 | PATCH | `/api/bgm/{name}` | `api_bgm_update` | 修改风格标记 |
+| 2841 | DELETE | `/api/bgm/{name}` | `api_bgm_delete` | 删除曲目 |
+| 3071 | GET | `/api/voices` | `api_voices_list` | 系统 + 克隆音色列表 |
+| 3103 | POST | `/api/voices/default` | `api_voices_set_default` | 设置默认音色 |
+| 3125 | POST | `/api/voices/engine` | `api_voices_set_engine` | 切换 TTS 引擎 |
+| 3136 | GET | `/api/voices/preview/{voice_id}` | `api_voices_preview` | 音色预览音频 |
+| 3186 | POST | `/api/voices/clone` | `api_voices_clone` | 上传样本创建克隆音色 |
+| 3286 | GET | `/api/voices/clone/status/{voice_id}` | `api_voices_clone_status` | 克隆部署状态 |
+| 3323 | DELETE | `/api/voices/clone/{voice_id}` | `api_voices_clone_delete` | 删除克隆音色 |
+| 3404 | GET | `/api/digital-human/characters` | `api_dh_characters_list` | 列出数字人角色 |
+| 3423 | POST | `/api/digital-human/characters` | `api_dh_characters_create` | 创建角色（上传照片） |
+| 3452 | DELETE | `/api/digital-human/characters/{cid}` | `api_dh_characters_delete` | 删除角色 |
+| 3469 | GET | `/api/digital-human/characters/{cid}/image` | `api_dh_characters_image` | 角色照片 |
+| 3578 | POST | `/api/digital-human/generate` | `api_digital_human_generate` | 启动 EMO 数字人任务 |
+| 3675 | GET | `/api/digital-human/status/{task_key}` | `api_digital_human_status` | 查询任务状态 |
+
+---
+
+# 附录 B：Pydantic 请求/响应模型字段
+
+> `web/app.py` 共 21 个 Pydantic 模型。重建时按此字段表实现。
+
+| 类名 | 行号 | 字段 |
+|---|---|---|
+| `PersonaFileRequest` | 712 | `filename: str`；`content: str` |
+| `EnvUpdateRequest` | 767 | `updates: dict[str, str]` |
+| `AttachmentRef` | 785 | `id: str`；`name: str`；`path: str` |
+| `ChatRequest` | 791 | `message: str`；`persona: str \| None = None`；`sessionId: str \| None = None`；`turnId: str \| None = None`；`thinking: Literal["off","high"] \| None = None`；`attachments: list[AttachmentRef] = Field(default_factory=list)` |
+| `StopRequest` | 1455 | `sessionId: str \| None = None` |
+| `SkillRequest` | 1499 | `skill: str`；`input: str`；`persona: str \| None = None` |
+| `SmsCodeRequest` | 1808 | `code: str` |
+| `WechatMpSaveRequest` | 2009 | `key: str`；`name: str = ''`；`app_id: str = ''`；`app_secret: str = ''`；`author: str = ''`；`theme: str = ''`；`set_default: bool = False` |
+| `WechatsyncInstallRequest` | 2164 | `action: str = 'install'` |
+| `ExtensionInstallRequest` | 2234 | `action: Literal['unzip','download']` |
+| `WechatsyncTokenRequest` | 2277 | `token: str` |
+| `WechatsyncSyncRequest` | 2296 | `markdown: str`；`platforms: list[str]`；`title: str = ''` |
+| `PublishDraftResolveRequest` | 2389 | `context: str = ''`；`session_id: str = ''`；`since: int = 0` |
+| `PublishRequest` | 2470 | `title: str = ''`；`body: str = ''`；`media: list[str] = []`；`tags: str = ''` |
+| `PublishJobRequest` | 2672 | 见下方详单 |
+| `BgmMetaRequest` | 2820 | `style: str = ''` |
+| `SetDefaultVoiceRequest` | 3099 | `voice_id: str` |
+| `SetTtsEngineRequest` | 3121 | `engine: str` |
+| `ProfileBuildRequest` | 4711 | `name: str`；`form: dict` |
+| `ScheduleItem` | 4963 | `title: str`；`date: str`；`platform: str = ""`；`time: str = ""`；`status: str = "idea"`；`note: str = ""`；`kind: str = "content"`；`url: str = ""`；`source: str = "manual"`；`event_type: str = ""`；`end_date: str = ""` |
+| `IdeaItem` | 5074 | `title: str`；`note: str = ""`；`source: str = ""`；`status: str = "pending"` |
+
+## B.1 PublishJobRequest 详单（图文转视频 + 多平台发布入口）
+
+```python
+class PublishJobRequest(BaseModel):
+    title: str = ''
+    body: str = ''
+    tags: str = ''
+    media: list[str] = Field(default_factory=list)            # outputs 相对路径
+    platform_contents: dict[str, str] = Field(default_factory=dict)
+    native_platforms: list[str] = Field(default_factory=list)
+    wechatsync_platforms: list[str] = Field(default_factory=list)
+    voice: str = ''                                            # 口播音色 voice_id
+    bgm: str = ''                                              # BGM 相对路径；空=自动
+    digital_human: str = ''                                    # 角色 ID
+    digital_human_pos: Literal[
+        'bottom-right', 'bottom-left', 'top-right', 'top-left'
+    ] = 'bottom-right'
+    generation_confirmed: bool = False
+    force_regenerate: bool = False
+```
+
+## B.2 非模型返回结构（前端契约）
+
+`/api/bgm` 返回项：
+
+```python
+{"name": str, "path": str, "size": int, "source": "曲库"|"AI 音乐",
+ "style": str, "url": "/api/media/{path}"}
+```
+
+`/api/digital-human/characters` 返回项：
+
+```python
+{"id": str, "name": str, "desc": str, "image_path": str,
+ "image_url": "/api/digital-human/characters/{cid}/image", "created_at": str}
+```
+
+EMO 任务持久化（`outputs/_shared/digital-human/tasks.json`）：
+
+```python
+{"task_id": str, "status": "PENDING"|"SUCCEEDED"|"FAILED"|"CANCELED",
+ "image": str, "audio": str, "pos": str, "style_level": "normal"|"calm"|"active",
+ "video_path": str, "created_at": str}
+```
+
+`/api/digital-human/generate` 使用 Form 参数（非 JSON）：
+
+```python
+pos: str = Form('bottom-right')
+image: str = Form('')          # outputs 相对路径
+audio: str = Form('')
+style_level: str = Form('normal')
+character_id: str = Form('')   # 已保存角色 ID 优先
+image_file: UploadFile | None = File(None)
+audio_file: UploadFile | None = File(None)
+```
+
+前端 `ChatMessage`（`store.ts`）：
+
+```typescript
+interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  agentContent?: string;
+  attachments?: UploadedFile[];
+  thinking?: string;
+  activity?: string;
+}
+```
+
+---
+
+# 附录 C：model_registry.py Provider 定义
+
+> 文件：`skills/shared/scripts/model_registry.py`。`_key(env,label,required,secret,aliases,choices)` 返回 `{env,label,required,secret,aliases,choices}`。`configured_providers(group, env)` 只返回所有必填 key 真正配置（非占位符）的 provider，不暴露 API key。
+
+## C.1 image（AI 生图）
+
+| provider id | name | key label | env | aliases |
+|---|---|---|---|---|
+| `openai` | OpenAI 兼容 / apimart / 小红书 MaaS | API Key | `IMG_API_KEY` | `OPENAI_API_KEY`,`API_KEY` |
+| | | API 根地址 | `IMG_BASE_URL` | `OPENAI_BASE_URL`,`OPENAI_API_BASE`,`BASE_URL` |
+| | | 模型 | `IMG_MODEL` | - |
+| | | 鉴权头名 | `IMG_API_KEY_HEADER` | - |
+| | | api-version | `IMG_API_VERSION` | - |
+| | | 内网直连 | `IMG_NO_PROXY` | - |
+
+## C.2 video（AI 视频生成）
+
+group 级 settings：`VIDEO_PROVIDER`（可选 `dashscope/ark/kling/openai-compatible/siliconflow/xhs-maas/agnes`）、`VIDEO_CAPABILITIES_JSON`。
+
+| provider id | name | 关键 env |
+|---|---|---|
+| `dashscope` | 阿里通义万相 Wan | `DASHSCOPE_API_KEY`,`DASHSCOPE_VIDEO_MODEL`,`DASHSCOPE_BASE_URL` |
+| `ark` | 火山引擎 Seedance | `ARK_API_KEY`,`ARK_MODEL`,`ARK_BASE_URL` |
+| `kling` | 快手可灵 | `KLING_ACCESS_KEY`,`KLING_SECRET_KEY`,`KLING_BASE_URL` |
+| `openai-compatible` | OpenAI 兼容 /videos | `VIDEO_API_KEY`,`VIDEO_BASE_URL`,`VIDEO_MODEL` |
+| `siliconflow` | 硅基流动 Wan I2V/T2V | `SILICONFLOW_API_KEY`,`SILICONFLOW_BASE_URL`,`SILICONFLOW_VIDEO_MODEL` |
+| `xhs-maas` | 小红书 MaaS happyhorse | `XHS_MAAS_API_KEY`,`XHS_MAAS_VIDEO_BASE`,`XHS_MAAS_T2V_MODEL`,`XHS_MAAS_I2V_MODEL`,`XHS_MAAS_RESOLUTION` |
+| `agnes` | Agnes Video | `AGNES_API_KEY`,`AGNES_BASE_URL`,`AGNES_POLL_BASE`,`AGNES_MODEL`,`AGNES_SIZE` |
+
+## C.3 music（AI 音乐 / BGM）
+
+group 级 settings：`MUSIC_PROVIDER`（可选 `dashscope/suno-compatible`）。
+
+| provider id | name | 关键 env |
+|---|---|---|
+| `dashscope` | 阿里 DashScope | `DASHSCOPE_API_KEY`,`DASHSCOPE_MUSIC_MODEL`,`DASHSCOPE_BASE_URL` |
+| `suno-compatible` | Suno 类第三方 | `MUSIC_API_KEY`,`MUSIC_BASE_URL`,`MUSIC_MODEL` |
+
+## C.4 voice（云端语音 / 声音克隆）
+
+group 级 settings：`VOICE_PROVIDER`（可选 `dashscope/qwen-tts/minimax/fish-audio/openai-compatible/gemini`）、`VOICE_NARRATOR_VOICE_ID`。
+
+| provider id | name | 关键 env |
+|---|---|---|
+| `dashscope` | 阿里 CosyVoice | `DASHSCOPE_API_KEY`,`DASHSCOPE_TTS_MODEL`,`DASHSCOPE_BASE_URL` |
+| `qwen-tts` | 阿里 Qwen-TTS（千问3） | `DASHSCOPE_API_KEY`,`QWEN_TTS_MODEL`(默认 qwen3-tts-flash),`DASHSCOPE_BASE_URL` |
+| `minimax` | MiniMax | `MINIMAX_API_KEY`,`MINIMAX_GROUP_ID`,`MINIMAX_MODEL`,`MINIMAX_BASE_URL` |
+| `fish-audio` | Fish Audio | `FISH_API_KEY`,`FISH_BASE_URL` |
+| `openai-compatible` | OpenAI 兼容 /audio/speech | `VOICE_API_KEY`,`VOICE_BASE_URL`,`VOICE_MODEL`,`VOICE_INSTRUCT_MODE`(field/inline),`VOICE_INSTRUCT_DELIM` |
+| `gemini` | Google Gemini TTS | `GEMINI_API_KEY`,`GEMINI_TTS_MODEL`,`GEMINI_VOICE`,`GEMINI_BASE_URL`,`GEMINI_TTS_RATE` |
+
+## C.5 默认 provider 选择规则
+
+1. 各 skill 脚本 `resolve_provider(explicit)`：优先 CLI `--provider` → `*_PROVIDER` 环境变量 → 报错。
+2. `configured_providers()` 用于确认哪些 provider 已配置必填凭证；只有一个可用时自动选择，多个可用且未指定时列出询问。
+3. 视频生成流程中 TTS 不按 `VOICE_PROVIDER` 选择，而是按 `voice_id` 通过 `_voice_engine()` 匹配音色库。
+4. 占位符正则：`replace_me|your[-_]?api[-_]?key|xxx|^\.{3}$|^<.*>$`。
+
+---
+
+# 附录 D：视频生成与发布核心函数实现要点
+
+> 文件：`web/app.py`。以下为重建所需的关键函数行号、伪代码与状态机。
+
+## D.1 辅助函数行号速查
+
+| 函数 | 行号 | 作用 |
+|---|---|---|
+| `PublishJobRequest` | 2672 | 发布/视频生成请求模型 |
+| `_publish_media(req)` | 2692 | 解析 `req.media` 为 images/videos |
+| `_bgm_tracks()` | 2735 | 枚举公共 BGM 曲库音频 |
+| `_video_bgm(title,body)` | 2754 | 按语义自动匹配 BGM |
+| `_get_default_voice()` | 3734 | 按引擎读默认音色文件 |
+| `_voice_engine(voice_id)` | 3775 | 判断 cosyvoice / qwen-tts |
+| `_llm_rewrite_narration(...)` | 3783 | qwen-plus 改写口播稿 |
+| `_generate_narration_segment(...)` | 3842 | 单段 TTS + 可选 SRT |
+| `_probe_audio_duration(path)` | 3966 | ffprobe 取音频时长 |
+| `_verify_video_output(path)` | 3978 | ffprobe 检查成片含音视频轨 |
+| `_resolve_requested_bgm(...)` | 3995 | 解析用户 BGM，无效回退自动 |
+| `_video_generation_fingerprint(...)` | 4008 | 计算缓存指纹 |
+| `_overlay_digital_human(...)` | 4029 | EMO 数字人 overlay |
+| `_generate_publish_video(...)` | 4092 | 视频生成主流程 |
+| `_run_job(job_id,req)` | 4311 | 异步发布 Job 调度 |
+| `_run_native_publish(...)` | 4455 | 单平台原生发布 |
+| `_run_wechatsync_single(...)` | 4557 | 单平台 Wechatsync 同步 |
+| `_bailian_api_key()` | 3484 | 读 DASHSCOPE_API_KEY |
+| `_upload_to_bailian(...)` | 3498 | dashscope SDK 上传取公网 URL |
+| `_emo_detect(...)` | 3519 | EMO 人脸检测 |
+| `_emo_create_task(...)` | 3538 | 创建 EMO 任务 |
+| `_emo_query_task(...)` | 3565 | 查询 EMO 状态 |
+
+## D.2 _bgm_tracks / _video_bgm / _resolve_requested_bgm
+
+```text
+_bgm_tracks():
+  只扫描 outputs/_shared/bgm，返回 AUDIO_EXTS 内文件，按名排序
+  不递归、不包含 ai-music 产物
+
+_video_bgm(title, body):
+  text = (title+body).lower()
+  关键词命中顺序：ecom > tech > corporate > emotional > viral > light
+  读 BGM_META(outputs/_shared/bgm/_meta.json) 的 style
+  候选链：主风格 → BGM_FALLBACK 预定义链 → 全曲库
+  选中：sha256(title|body)[:8] 转 int 对候选数取模，稳定选同一首
+
+_resolve_requested_bgm(bgm_ref, title, body):
+  bgm_ref 空 → _video_bgm(title, body) 返回 (Path|None, '')
+  bgm_ref 非空 → _safe_local_output_path 解析，必须属于 _bgm_tracks() 集合
+  非法 → (None, 'BGM 不在当前曲库中: ...')
+```
+
+## D.3 _overlay_digital_human
+
+```text
+_overlay_digital_human(main_video, character_id, audio_path, pos, work_dir):
+  1. 读 DASHSCOPE_API_KEY，未配置 → 失败
+  2. 校验 character_id 存在且有 image_path
+  3. _safe_local_output_path 校验角色照片路径
+  4. 校验 audio_path 存在且非空（本轮实际口播音频）
+  5. 上传角色照片 + 口播音频到百炼文件服务，取公网 URL
+  6. _emo_detect(image_url) → face_bbox/ext_bbox
+  7. _emo_create_task(emo-v1) → task_id
+  8. 轮询 _emo_query_task，每 15s 一次，最多 40 次（约 10 分钟）
+  9. 成功 → 下载数字人视频到 work_dir/digital_human/dh.mp4
+  10. pos 仅允许 bottom-right/bottom-left/top-right/top-left
+      映射 overlay 参数如 W-w-30:H-h-30
+  11. ffmpeg -y -i main -i dh.mp4 -filter_complex
+      "[1:v]scale=200:-2[dh];[0:v][dh]overlay=..." -c:a copy -c:v libx264 -preset fast out
+  12. 成功 → 用 out 替换 main_video
+  13. 任一步失败 → (False, '数字人...失败')，终止主流程
+```
+
+## D.4 _generate_publish_video 主流程与状态机
+
+```text
+_generate_publish_video(job_id, req):
+  1. images, videos = _publish_media(req)
+     videos 已存在 → 返回 verified（复用）
+  2. 无 images → fail('没有可用于生成视频的图片')
+  3. generation_confirmed=False → fail('尚未确认 TTS、BGM、数字人及付费调用上限')
+  4. voice = req.voice 或 _get_default_voice()
+     engine = _voice_engine(voice)  # cosyvoice/qwen-tts/None
+     engine 空 → fail
+  5. bgm, bgm_err = _resolve_requested_bgm(req.bgm, title, body)
+     bgm_err → fail
+  6. digital_human 非空但角色不存在 → fail
+  7. fingerprint = _video_generation_fingerprint(...)
+     输出 outputs/_generated_videos/<fp>.mp4
+     工作 outputs/_generated_videos/<fp>_assets/
+     manifest outputs/_generated_videos/<fp>.manifest.json
+  8. 缓存命中：force_regenerate=False 且 manifest.status=='completed'
+     且 _verify_video_output 通过 → 复用
+  9. manifest.status='running'，写入 title/images/engine/voice/bgm/数字人/paid_operations
+  10. narration = _llm_rewrite_narration(title, body, n_shots, work_dir)
+      LLM 失败 → 降级 _split_captions(body, n_shots) 按句切分
+  11. 逐段 TTS：_generate_narration_segment(script, out, voice, srt, engine)
+      失败 → fail('TTS 失败...')
+      收集 seg_paths / seg_durations / seg_srt_paths
+  12. 合并口播：ffmpeg -f concat -safe 0 -i list -c:a libmp3lame -b:a 128k narration_full.mp3
+      失败 → fail
+  13. 合并字幕：_merge_srt_files(seg_srt_paths, seg_durations, narration_full.srt)
+      失败 → fail
+  14. storyboard.json：
+      size=1080x1920, image_motion=static,
+      shots=[{image, duration=max(1.5, seg_durations[i]), motion=static}],
+      narration, subtitle, bgm(可选), bgm_volume=0.35
+  15. assemble.py assemble --storyboard ... -o base.mp4（超时 900s）
+      失败 → fail
+  16. digital_human 非空 → _overlay_digital_human(base, ..., narration_full.mp3, pos, work_dir)
+      失败 → fail
+  17. 复制 base → <fingerprint>.mp4
+  18. _verify_video_output(out) 失败 → fail
+  19. manifest.status='completed'，写 completed_at/output/assets_dir
+  20. rel 加入 req.media，返回 verified
+```
+
+状态机：
+
+```text
+running ──成功──→ completed
+running ──失败──→ fail
+running ──超时──→ timeout
+```
+
+fingerprint 计算：
+
+```text
+payload = {title, body, images:[{path,size,mtime}], tts_engine, voice,
+           bgm: 相对 outputs 路径, digital_human, digital_human_pos}
+fingerprint = sha256(json.dumps(payload, sort_keys=True))[:12]
+```
+
+第三方调用：
+
+| 步骤 | 调用 |
+|---|---|
+| 口播稿改写 | 百炼 qwen-plus `/compatible-mode/v1/chat/completions` |
+| TTS | `skills/shared/scripts/tts.py speak` 或 `voice_clone.py clone` |
+| 音频时长 | `ffprobe -show_entries format=duration` |
+| 音频拼接 | `ffmpeg -f concat` |
+| 视频合成 | `skills/openclaw/auto-short-video/scripts/assemble.py` |
+| 数字人 | 百炼 EMO `emo-detect-v1`/`emo-v1` + 文件上传 |
+| 成片自检 | `ffprobe -show_entries format=duration:stream=codec_type -of json` |
+
+## D.5 _run_job 发布 Job 调度
+
+```text
+_run_job(job_id, req):
+  1. job = _load_job(job_id)
+  2. _save_lock + save()：每次修改持久化到 jobs/<job_id>.json
+  3. run_task(task, treq)：
+     - 跳过 skipped
+     - status/message/started_at/attempt++，save()
+     - media → _generate_publish_video；成功写 job['generated_media']
+     - wechatsync → _run_wechatsync_single
+     - native → _run_native_publish
+  4. 拆分 media_tasks / other_tasks
+  5. orig_media = list(req.media)
+     req_orig = req.model_copy(update={'media': orig_media})  # 图文平台用，防被生成视频污染
+  6. 启动前取 req_videos 快照，判断 VIDEO_ONLY/抖音是否需等视频
+  7. media_thread 并行跑 media_tasks，每轮检查 _JOB_CANCEL_FLAG
+  8. 串行 other_tasks：
+     - VIDEO_ONLY/抖音自动转视频：若 req_videos 空 且 media_thread 在跑 →
+       status='publishing', message='等待视频版生成…', join()
+       视频失败 → fail('视频版生成失败，未执行发布')
+       成功 → run_task(task, req)  # req.media 已含生成视频
+     - 图文/文章/同步平台 → run_task(task, req_orig)
+  9. 等 media_thread 结束
+  10. job.status = 'cancelled' 或 'done'，清理取消标志
+```
+
+重试保留媒体配置：`req_orig` 在 Job 开始时以原始 `media` 快照复制；视频平台在 `media_thread.join()` 后用 `req`（已含生成视频）；媒体任务自身重试用原 `req`，失败不污染 `req.media`。
+
+---
+
+# 附录 E：assemble.py 合成器与 FFmpeg 细节
+
+> 文件：`skills/openclaw/auto-short-video/scripts/assemble.py`。CLI 子命令 `assemble` / `selftest`。
+
+## E.1 入口与参数
+
+| 项 | 说明 |
+|---|---|
+| 主函数 | `cmd_assemble(args)` 行 313 |
+| `--storyboard PATH` | 必填，`-` 表示 stdin |
+| `-o/--output PATH` | 必填，建议位于 `outputs/<主题>/` |
+| `--sub-font` `--sub-size` `--sub-margin-v` `--pad-mode` | 字幕与填充可选参数 |
+
+## E.2 Storyboard JSON 字段
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `size` | str | 画布尺寸，默认 `1080x1920` |
+| `image_motion` | str | `static` / `ken-burns`（默认 ken-burns） |
+| `shots` | list | 每项含 `image`/`video`、`duration`、`caption`、`motion`、`audio_mode` |
+| `narration` | str | 整条配音路径 |
+| `bgm` | str | 背景音乐路径 |
+| `subtitle` | str | 外部 SRT/ASS 字幕路径 |
+| `bgm_volume` | float | BGM 相对音量，默认 `0.25` |
+| `pad_mode` | str | `trim`/`auto`/`stretch`/`loop`/`freeze` |
+| `sfx` | list | 音效对象 `file`/`at`/`volume` |
+
+## E.3 FFmpeg 实现要点
+
+| 模块 | 实现 |
+|---|---|
+| 工具检查 | 缺 ffmpeg/ffprobe → 退出码 3 |
+| 画布 | `w,h = size.lower().split("x")`，默认 1080×1920 |
+| 图片滤镜 | static：`scale=...:force_original_aspect_ratio=decrease,pad=...:black,setsar=1,fps=30`；ken-burns：`zoompan=z='min(zoom+0.0008,1.08)':d=<frames>:s=wxh:fps=30` |
+| 视频镜头 | `_make_shot_clip` 按 `pad_mode` 处理时长不足：`trim` 硬失败；`auto` 优先慢放≤2 倍否则循环；`stretch` 慢放；`loop` 循环；`freeze` 冻结末帧 |
+| 音频模式 | `audio_mode=native` 保留原片音轨；`dub`/默认丢弃原片人声 |
+| 拼接 | FFmpeg concat demuxer：`file '{c}'` 列表 → `ffmpeg -f concat -safe 0 -i list.txt` |
+| 音频混音 | 基轨 `aresample=48000`；配音 `[voice]`；native+voice 用 `sidechaincompress=threshold=0.03:ratio=8:attack=20:release=300`；BGM `-stream_loop -1` + `volume=<vol>`；SFX `adelay`；最终 `amix=inputs=N:duration=first:normalize=0` |
+| BGM 音量 | `float(sb.get("bgm_volume") or 0.25)` |
+| 字幕样式 | ASS：`PlayResX/PlayResY=视频尺寸`；字号 `min(w,h)*0.05`（1080 宽→54）；`MarginV=h*0.07`；左右边距 `w*0.03`；白字黑边；底部居中 Alignment=2；长行按宽度确定性折行 |
+| 字幕烧录 | `ffmpeg -vf subtitles='{escaped}' -c:a copy` |
+| 输出编码 | 镜头 `libx264`+`yuv420p`；音频 `aac`；stage2 视频 `-c:v copy` |
+
+## E.4 失败处理
+
+| 场景 | 退出码 |
+|---|---|
+| 缺 ffmpeg/ffprobe | 3 |
+| FFmpeg 执行失败 | 4 |
+| storyboard JSON 错误 | 1 |
+| 文件不存在 | 1 |
+| `trim` 模式时长不足 | 4 |
+| 自检失败 | 1 |
+
+---
+
+# 附录 F：skills/shared/scripts 共享脚本清单
+
+> 重建时按此清单实现每个脚本的职责；未列出的脚本不属于本次基线后改造重点，但属于共享能力底座。
+
+| 文件 | 功能 |
+|---|---|
+| `account_stats.py` | 抓已登录账号创作数据（Playwright） |
+| `ai_image.py` | 通用 AI 文生图/图生图/变体客户端（OpenAI 兼容） |
+| `ai_music.py` | AI 音乐/BGM 生成可插拔客户端 |
+| `ai_video.py` | AI 视频（T2V/I2V/数字人口播）多 provider 客户端 |
+| `asr.py` | 语音转字幕（faster-whisper） |
+| `audio_mix.py` | 多轨音频混合（旁白+BGM+音效，ducking） |
+| `audio_ops.py` | 通用音频处理（剪辑/转码/音量/拼接/淡入淡出/变速/降噪） |
+| `audio_viz.py` | 音频可视化视频（波形/频谱/CQT） |
+| `batch_process.py` | 批量处理目录并委派 ops |
+| `beatsync.py` | 音乐卡点视频（节拍驱动切换） |
+| `bili_login.py` | B 站 TV 端扫码登录 |
+| `calendar_ops.py` | 内容日历/排期确定性读写 |
+| `chromakey.py` | 绿幕/蓝幕抠像与背景合成 |
+| `content_guard.py` | 出站内容安全扫描/脱敏/拦截 |
+| `doc_convert.py` | Markdown → HTML/PDF/长图 PNG |
+| `douyin_publish.py` | 抖音发布（Playwright headless） |
+| `fix_timing.py` | 基于 SRT 与 lines 重建镜头 duration |
+| `highlight_cut.py` | 长视频/直播高光切片 |
+| `image_ops.py` | 通用图像处理（缩放/裁剪/压缩/水印/圆角/拼接） |
+| `img_enhance.py` | 图片增强/放大（Pillow+OpenCV） |
+| `intro_outro.py` | 片头/片尾卡片生成并拼接 |
+| `login_state.py` | 登录状态文件协议（web_publisher/xhs_publish 共用） |
+| `manifest.py` | 层间产物契约确定性读写 |
+| `meme_ops.py` | 表情包/Meme 生成（Pillow） |
+| `mindmap.py` | Markdown 大纲 → 思维导图（markmap） |
+| `model_registry.py` | 媒体模型 provider 元数据注册表 |
+| `multivoice.py` | 多角色对话配音引擎（按 cast/lines 委派 tts/voice_clone） |
+| `output_paths.py` | Easel 输出路径规约单点 truth |
+| `persona_gate.py` | 发布前人设一致性提醒与落账 |
+| `reframe.py` | 视频画幅智能转换（竖横互转） |
+| `remove_bg.py` | 图片去背景（rembg） |
+| `render_card.py` | HTML → 图片确定性渲染（Playwright） |
+| `slideshow.py` | 图片相册 → 视频（Ken Burns+转场+BGM+字幕） |
+| `social_stats.py` | 归因层公共计算（safe_div/聚合/覆盖率） |
+| `subtitle_ops.py` | 字幕解析/双语合并/烧录（srt/vtt/ass 互转） |
+| `tts.py` | 页面配置驱动闭源 TTS（CosyVoice/Qwen-TTS），禁止 Edge |
+| `video_ops.py` | 通用视频处理（剪辑/转码/缩放/动图/aspect） |
+| `voice_clone.py` | 声音克隆配音可插拔客户端 |
+| `web_publisher.py` | 通用浏览器发布框架（Playwright+登录态持久化） |
+| `wordcount.py` | 社媒文案字数统计与校验 |
+| `xhs_comment.py` | 小红书评论抓取与回复 |
+| `xhs_publish.py` | 小红书发布（Playwright headless） |
+| `zhihu_answer.py` | 已登录知乎 Profile 发布回答 |
+| `zhihu_comments_fetch.py` | 已登录知乎 Profile 抓评论 |
+
+---
+
+# 附录 G：前端组件与工具库清单
+
+> 文件：`web/frontend/src/`。重建时按此清单实现每个页面/组件职责。
+
+## G.1 components/*.tsx
+
+| 文件 | 功能 |
+|---|---|
+| `AccountsPage.tsx` | 平台账号登录、whoami、公众号与 Wechatsync 配置 |
+| `BgmPage.tsx` | BGM 曲库列表、上传、风格标注、删除 |
+| `BreakdownPage.tsx` | 爆款内容拆解页，输出结构分析并保存为选题 |
+| `CalendarPage.tsx` | 内容日历/排期月视图 |
+| `ChatPage.tsx` | 对话页：附件拖拽/粘贴、流式消息、重试、思考过程 |
+| `DashboardPage.tsx` | 工作台首页：聚合热点/排期/产物/账号/选题/归因卡片 |
+| `ErrorBoundary.tsx` | 全局 React 错误边界 |
+| `FilePreview.tsx` | 消息中 outputs 文件/目录预览卡片（图片/视频/音频/HTML/PDF） |
+| `IdeasPage.tsx` | 选题库看板（待做/进行中/已完成） |
+| `MessageBubble.tsx` | 单条消息气泡：Markdown 渲染、复制、重试、附件预览 |
+| `OnboardingWizard.tsx` | 首次使用画像引导向导 |
+| `OutputsPage.tsx` | 内容库产物树浏览、过滤、预览、删除 |
+| `ProfilePage.tsx` | 用户画像六维文件在线编辑与删除 |
+| `PublishPage.tsx` | 多平台发布中心（原生/Wechatsync/数字人），草稿/校验/发布任务 |
+| `Sidebar.tsx` | 左侧主导航 + 会话历史列表 |
+| `SkillDrawer.tsx` | Skill 详情抽屉：说明、配置 API、执行 |
+| `SkillPage.tsx` | Skill 技能库总览（按层分类、搜索） |
+| `SubNav.tsx` | 顶部子导航（工作台/热点/选题/日历/发布/拆解） |
+| `TrendsPage.tsx` | 热点雷达：多平台热搜 + 一键保存为选题/进入对话 |
+| `UseCasesPage.tsx` | 使用场景目录页（电商/小红书/知识等） |
+| `VoicePage.tsx` | 配音&数字人页：音色管理、克隆、默认引擎、数字人角色与生成 |
+| `WelcomeGuide.tsx` | 首次进入欢迎引导弹窗 |
+| `icons.tsx` | 项目自定义线性 SVG 图标库 |
+
+## G.2 lib/*.ts 与入口
+
+| 文件 | 功能 |
+|---|---|
+| `api.ts` | 后端 REST API 的 TypeScript 封装与类型 |
+| `sanitize.ts` | Markdown → 已消毒 HTML（marked + DOMPurify，含表格修复） |
+| `store.ts` | 前端本地状态持久化（会话/发布草稿/活动会话） |
+| `whoami.ts` | 账号登录态本地缓存与后台真校验调度（TTL+并发控制） |
+| `main.tsx` | React 入口，挂载 `<App/>`，包裹 ErrorBoundary/StrictMode |
+
+---
+
+# 附录 H：变更文件 → 文档章节索引
+
+> `7cfeca7..b3900be` 全部变更文件及其在本文档中的对应章节。重建者可据此定位每个文件的实现依据。
+
+| 文件 | 状态 | 对应章节 |
+|---|---|---|
+| `.env.example` | M | 14、18、21、26、附录 C |
+| `.gitignore` | M | 18（部署） |
+| `ARCHITECTURE.md` | A | 18 |
+| `KEYS-GUIDE.md` | A | 18 |
+| `TODO.md` | A | 18、31 |
+| `USAGE-GUIDE.md` | A | 18 |
+| `docs/Easel从原始基线完整重建规格书.md` | A | 全文 |
+| `docs/USE-CASES.md` | A | 6、15 |
+| `docs/企业新媒体与电商场景深度开发迭代计划.md` | A | 15 |
+| `docs/垂直领域视频生成器技术方案.md` | A | 15 |
+| `docs/视频生成流程标准.md` | A | 10、22 |
+| `easel/commands/doctor.py` | M | 4、18 |
+| `easel/commands/ping.py` | M | 4、18 |
+| `openclaw/sync.sh` | M | 18、26 |
+| `openclaw/workspace/AGENTS.md` | M | 18、26 |
+| `pyproject.toml` | M | 18、附录 C |
+| `scripts/openai_maas_adapter.py` | M | 14、26 |
+| `setup.sh` | M | 4、14、18 |
+| `start.sh` | A | 4、18 |
+| `skills/openclaw/INDEX.md` | A | 26 |
+| `skills/openclaw/ai-image-gen/SKILL.md` | M | 26 |
+| `skills/openclaw/ai-music/SKILL.md` | M | 12、26 |
+| `skills/openclaw/ai-video-gen/EASEL-META.md` | M | 26 |
+| `skills/openclaw/ai-video-gen/SKILL.md` | M | 26 |
+| `skills/openclaw/auto-short-video/SKILL.md` | M | 10、22、26 |
+| `skills/openclaw/auto-short-video/scripts/assemble.py` | M | 10、22、附录 E |
+| `skills/openclaw/skill-wechat-publisher/scripts/config.py` | M | 7、20 |
+| `skills/openclaw/skill-wechat-publisher/scripts/multi_publish.py` | M | 8、20 |
+| `skills/openclaw/tts-voiceover/EASEL-META.md` | M | 11、23 |
+| `skills/openclaw/tts-voiceover/SKILL.md` | M | 11、23 |
+| `skills/openclaw/voice-clone/SKILL.md` | M | 11、23 |
+| `skills/shared/scripts/ai_image.py` | M | 9、21、附录 F |
+| `skills/shared/scripts/ai_music.py` | M | 12、24、附录 F |
+| `skills/shared/scripts/ai_video.py` | M | 9、21、附录 F |
+| `skills/shared/scripts/audio_viz.py` | M | 附录 F |
+| `skills/shared/scripts/douyin_publish.py` | M | 8、20、附录 F |
+| `skills/shared/scripts/intro_outro.py` | M | 附录 F |
+| `skills/shared/scripts/meme_ops.py` | M | 附录 F |
+| `skills/shared/scripts/model_registry.py` | M | 9、21、附录 C |
+| `skills/shared/scripts/slideshow.py` | M | 附录 F |
+| `skills/shared/scripts/tts.py` | M | 11、23、附录 F |
+| `skills/shared/scripts/voice_clone.py` | M | 11、23、附录 F |
+| `skills/shared/scripts/web_publisher.py` | M | 8、20、附录 F |
+| `skills/shared/scripts/xhs_publish.py` | M | 8、20、附录 F |
+| `tests/test_core.py` | M | 30、附录 D |
+| `web/app.py` | M | 5、7、8、9、10、11、12、13、14、19、20、22、23、24、25、附录 A/B/D |
+| `web/frontend/index.html` | M | 5、18 |
+| `web/frontend/src/App.tsx` | M | 5、6、附录 G |
+| `web/frontend/src/components/AccountsPage.tsx` | M | 7、附录 G |
+| `web/frontend/src/components/BgmPage.tsx` | A | 12、附录 G |
+| `web/frontend/src/components/ChatPage.tsx` | M | 5、附录 G |
+| `web/frontend/src/components/DashboardPage.tsx` | M | 附录 G |
+| `web/frontend/src/components/ErrorBoundary.tsx` | M | 附录 G |
+| `web/frontend/src/components/FilePreview.tsx` | A | 5、附录 G |
+| `web/frontend/src/components/IdeasPage.tsx` | M | 附录 G |
+| `web/frontend/src/components/MessageBubble.tsx` | M | 5、附录 G |
+| `web/frontend/src/components/PublishPage.tsx` | M | 8、附录 G |
+| `web/frontend/src/components/Sidebar.tsx` | M | 附录 G |
+| `web/frontend/src/components/UseCasesPage.tsx` | A | 6、附录 G |
+| `web/frontend/src/components/VoicePage.tsx` | A | 11、13、附录 G |
+| `web/frontend/src/components/WelcomeGuide.tsx` | A | 4、附录 G |
+| `web/frontend/src/components/icons.tsx` | M | 附录 G |
+| `web/frontend/src/lib/api.ts` | M | 5、7、8、11、12、13、附录 B/G |
+| `web/frontend/src/lib/sanitize.ts` | M | 5、附录 G |
+| `web/frontend/src/lib/store.ts` | M | 5、附录 B/G |
+| `web/frontend/src/main.tsx` | M | 附录 G |
+| `web/frontend/src/styles/index.css` | M | 5、附录 G |
+| `web/frontend/vite.config.ts` | M | 5、18 |
+| `web/static/elephbrain-icon-transparent.png` | A | 6 |
+| `web/static/elephbrain-icon.png` | A | 6 |
+
+> 状态列：A=新增，M=修改。共 58 个变更文件（含规格书自身），全部已映射到至少一个文档章节或附录。
