@@ -23,7 +23,7 @@ dependencies = [
 [project.optional-dependencies]
 media = [
     "Pillow", "opencv-python>=4.10,<5", "numpy", "pandas", "matplotlib", "librosa",
-    "faster-whisper", "edge-tts",
+    "faster-whisper", "dashscope",
     "playwright", "rembg", "onnxruntime", "biliup",
     "jieba", "snownlp", "markdown",
 ]

@@ -69,15 +69,27 @@ class Handler(BaseHTTPRequestHandler):
             if endpoint and not endpoint.endswith("/chat/completions"):
                 endpoint = endpoint.rstrip("/") + "/chat/completions"
 
-            # 注入 max_tokens：百炼 deepseek-v4-flash 最大输出 393216，
-            # OpenClaw 默认 8192 会导致长回复被截断（stopReason=error）。
-            # 请求体未带或 ≤ 8192 时改大为 65536（足够覆盖 thinking + 回复）。
             try:
                 body = json.loads(raw_body)
-                cur = body.get("max_tokens")
-                if cur is None or (isinstance(cur, int) and cur <= 8192):
-                    body["max_tokens"] = 65536
-                    raw_body = json.dumps(body, ensure_ascii=False).encode()
+                model = body.get("model", "")
+                if "/" in model and not model.startswith("http"):
+                    body["model"] = model.split("/", 1)[1]
+                configured_model = os.environ.get("OPENAI_MAAS_MODEL", "deepseek-v4-flash-0731").strip()
+                min_output_tokens = int(os.environ.get("OPENAI_MAAS_MIN_OUTPUT_TOKENS", "65536"))
+                if body.get("model") == configured_model or str(body.get("model", "")).startswith("deepseek-v4"):
+                    cur = body.get("max_tokens")
+                    cur2 = body.get("max_completion_tokens")
+                    effective_cur = cur if cur is not None else cur2
+                    if effective_cur is None or (isinstance(effective_cur, int) and effective_cur < min_output_tokens):
+                        body["max_tokens"] = min_output_tokens
+                        if "max_completion_tokens" in body:
+                            body["max_completion_tokens"] = min_output_tokens
+                # 诊断日志
+                msgs = body.get("messages", [])
+                msg_count = len(msgs)
+                stream = body.get("stream", False)
+                print(f"[adapter] model={body.get('model')} max_tokens={body.get('max_tokens')} msgs={msg_count} stream={stream}", flush=True)
+                raw_body = json.dumps(body, ensure_ascii=False).encode()
             except (json.JSONDecodeError, TypeError):
                 pass  # 非 JSON 或解析失败，原样转发
 
@@ -93,7 +105,8 @@ class Handler(BaseHTTPRequestHandler):
             )
 
             # Internal MaaS should not inherit workstation-wide outbound proxies.
-            with build_opener(ProxyHandler({})).open(request, timeout=600) as response:
+            upstream_timeout = int(os.environ.get("OPENAI_MAAS_TIMEOUT_SECONDS", "7200"))
+            with build_opener(ProxyHandler({})).open(request, timeout=upstream_timeout) as response:
                 self.send_response(response.status)
                 self.send_header(
                     "Content-Type",
@@ -106,9 +119,28 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
 
                 # readline preserves SSE event boundaries and forwards each event immediately.
+                # 同时解析 SSE 事件，记录 finish_reason 和 usage 用于诊断。
+                collected_finish = None
+                collected_usage = None
                 while chunk := response.readline():
                     self.wfile.write(chunk)
                     self.wfile.flush()
+                    # 解析 SSE data 行以收集诊断信息
+                    if chunk.startswith(b"data: ") and not chunk.startswith(b"data: [DONE]"):
+                        try:
+                            ev = json.loads(chunk[6:].strip())
+                            choices = ev.get("choices", [])
+                            if choices:
+                                fr = choices[0].get("finish_reason")
+                                if fr:
+                                    collected_finish = fr
+                            u = ev.get("usage")
+                            if u:
+                                collected_usage = u
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+                if collected_finish or collected_usage:
+                    print(f"[adapter] response finish_reason={collected_finish} usage={collected_usage}", flush=True)
         except HTTPError as exc:
             detail = exc.read()
             self.send_response(exc.code)

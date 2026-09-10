@@ -169,24 +169,29 @@ if [ -n "${OPENAI_MAAS_API_KEY:-}" ]; then
     OPENAI_MODEL="${OPENAI_MAAS_MODEL:-gpt-5.5}"
     OPENAI_PORT="${OPENAI_MAAS_ADAPTER_PORT:-18791}"
     OPENAI_ENDPOINT="${OPENAI_MAAS_ENDPOINT:?OPENAI_MAAS_ENDPOINT is required}"
+    OPENAI_MIN_OUTPUT_TOKENS="${OPENAI_MAAS_MIN_OUTPUT_TOKENS:-65536}"
+    OPENAI_TIMEOUT_SECONDS="${OPENAI_MAAS_TIMEOUT_SECONDS:-7200}"
     # A new custom provider must be written atomically or OpenClaw rejects the incomplete intermediate state.
     OPENAI_PROVIDER_CONFIG=$("$PYTHON_BIN" - "$PROJECT_ROOT" "$OPENAI_PORT" "$OPENAI_MODEL" \
-        "$OPENAI_ENDPOINT" "$OPENAI_MAAS_API_KEY" "$PYTHON_BIN" <<'PY'
+        "$OPENAI_ENDPOINT" "$OPENAI_MAAS_API_KEY" "$PYTHON_BIN" "$OPENAI_MIN_OUTPUT_TOKENS" "$OPENAI_TIMEOUT_SECONDS" <<'PY'
 import json
 import sys
 
-root, port, model, endpoint, api_key, python_bin = sys.argv[1:]
+root, port, model, endpoint, api_key, python_bin, min_output_tokens, timeout_seconds = sys.argv[1:]
 print(json.dumps({
     "baseUrl": f"http://127.0.0.1:{port}/v1",
     "api": "openai-completions",
     "apiKey": "local-adapter",
-    "timeoutSeconds": 600,
+    "timeoutSeconds": int(timeout_seconds),
     "request": {"allowPrivateNetwork": True},
     "models": [{
         "id": model,
         "name": "OpenAI-compatible model",
         "reasoning": True,
         "input": ["text"],
+        "contextWindow": 1048576,
+        "contextTokens": 1048576,
+        "maxTokens": int(min_output_tokens),
     }],
     "localService": {
         "command": python_bin,
@@ -198,6 +203,8 @@ print(json.dumps({
             "OPENAI_MAAS_API_KEY": api_key,
             "OPENAI_MAAS_ENDPOINT": endpoint,
             "OPENAI_MAAS_MODEL": model,
+            "OPENAI_MAAS_MIN_OUTPUT_TOKENS": min_output_tokens,
+            "OPENAI_MAAS_TIMEOUT_SECONDS": timeout_seconds,
         },
     },
 }))
