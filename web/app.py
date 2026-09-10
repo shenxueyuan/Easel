@@ -598,6 +598,16 @@ def _safe_output_path(rel: str) -> Path:
     return full
 
 
+def _safe_local_output_path(rel: str) -> Path:
+    full = (LOCAL_OUTPUTS_DIR / rel).resolve()
+    root = LOCAL_OUTPUTS_DIR.resolve()
+    if root != full and root not in full.parents:
+        raise HTTPException(403, '非法路径')
+    if not full.is_file():
+        raise HTTPException(404, '文件不存在')
+    return full
+
+
 @app.get("/")
 async def index():
     no_cache = {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"}
@@ -2663,13 +2673,16 @@ class PublishJobRequest(BaseModel):
     title: str = ''
     body: str = ''
     tags: str = ''
-    media: list[str] = []
-    platform_contents: dict[str, str] = {}
-    native_platforms: list[str] = []       # 原生发布平台 key（xiaohongshu/douyin/...）
-    wechatsync_platforms: list[str] = []   # Wechatsync 平台 key（toutiao/juejin/...）
-    voice: str = ''                        # 口播音色（系统音色 voice_id 或克隆音色 voice_id；空=默认）
-    digital_human: str = ''                # 数字人人像照片路径（空=不加数字人）
-    digital_human_pos: str = 'bottom-right'  # 数字人位置：bottom-right/bottom-left/top-right/top-left
+    media: list[str] = Field(default_factory=list)
+    platform_contents: dict[str, str] = Field(default_factory=dict)
+    native_platforms: list[str] = Field(default_factory=list)       # 原生发布平台 key（xiaohongshu/douyin/...）
+    wechatsync_platforms: list[str] = Field(default_factory=list)   # Wechatsync 平台 key（toutiao/juejin/...）
+    voice: str = ''                        # 口播音色（系统音色 voice_id 或克隆音色 voice_id；空=页面默认）
+    bgm: str = ''                          # BGM 曲库相对路径（空=按内容从曲库自动匹配）
+    digital_human: str = ''                # 数字人角色 ID（空=不加数字人）
+    digital_human_pos: Literal['bottom-right', 'bottom-left', 'top-right', 'top-left'] = 'bottom-right'
+    generation_confirmed: bool = False      # 已向用户展示并确认制作配置与付费上限
+    force_regenerate: bool = False          # 明确重新生成时跳过缓存
 
 
 def _publish_content(req: PublishJobRequest, platform: str) -> str:
@@ -2720,10 +2733,11 @@ def _bgm_meta_save(meta: dict) -> None:
 
 
 def _bgm_tracks() -> list[Path]:
-    """曲库全部音频文件（_shared/bgm 为主库，ai-music 产物也算入可选池）。"""
-    roots = [BGM_DIR, LOCAL_OUTPUTS_DIR / 'ai-music']
-    return sorted({p.resolve() for root in roots if root.is_dir() for p in root.iterdir()
-                   if p.is_file() and p.suffix.lower() in AUDIO_EXTS})
+    """公共 BGM 曲库中的全部音频文件。"""
+    if not BGM_DIR.is_dir():
+        return []
+    return sorted(p.resolve() for p in BGM_DIR.iterdir()
+                  if p.is_file() and p.suffix.lower() in AUDIO_EXTS)
 
 
 # 风格降级链：主风格无曲目时按序回退到相近风格，避免科技/企业类内容因曲库未标 tech 而静音。
@@ -2752,16 +2766,18 @@ def _video_bgm(title: str, body: str) -> Path | None:
         ('light', ('日常', '生活', '分享', 'vlog', '图文')),
     )
     style = next((key for key, words in style_keywords if any(word in text for word in words)), '')
-    if not style:
+    all_tracks = _bgm_tracks()
+    if not all_tracks:
         return None
     meta = _bgm_meta()
-    candidates = [style, *BGM_FALLBACK.get(style, ())]
+    candidates = [style, *BGM_FALLBACK.get(style, ())] if style else []
     for cand in candidates:
-        tracks = [p for p in _bgm_tracks() if meta.get(p.name, {}).get('style') == cand]
+        tracks = [p for p in all_tracks if meta.get(p.name, {}).get('style') == cand]
         if tracks:
             pick = int(hashlib.sha256(f'{title}|{body}'.encode('utf-8')).hexdigest()[:8], 16) % len(tracks)
             return tracks[pick]
-    return None
+    pick = int(hashlib.sha256(f'{title}|{body}|library'.encode('utf-8')).hexdigest()[:8], 16) % len(all_tracks)
+    return all_tracks[pick]
 
 
 @app.get("/api/bgm")
@@ -2771,7 +2787,7 @@ async def api_bgm_list():
     out = []
     for p in _bgm_tracks():
         try:
-            rel = str(p.relative_to(OUTPUTS_DIR.resolve()))
+            rel = str(p.relative_to(LOCAL_OUTPUTS_DIR.resolve()))
         except ValueError:
             continue
         out.append({'name': p.name, 'path': rel, 'size': p.stat().st_size,
@@ -2954,6 +2970,50 @@ SYSTEM_VOICES = [
 
 PREVIEW_TEXT = '大家好，欢迎来到我的频道，今天和大家分享一个有趣的话题。'
 
+# ── Qwen-TTS 系统音色（千问3-TTS，效果更自然）──────────────────────────────
+# 官方音色列表：https://help.aliyun.com/zh/model-studio/qwen-tts-voice-list
+# voice 参数为英文名（如 Cherry），与 CosyVoice 的 voice_id 体系完全独立
+QWEN_TTS_VOICES = [
+    {'voice_id': 'Cherry', 'name': '芊悦', 'trait': '阳光积极、亲切自然小姐姐', 'scene': '通用女声', 'language': '中文', 'gender': '女', 'type': 'qwen-tts'},
+    {'voice_id': 'Serena', 'name': '苏瑶', 'trait': '温柔小姐姐', 'scene': '通用女声', 'language': '中文', 'gender': '女', 'type': 'qwen-tts'},
+    {'voice_id': 'Ethan', 'name': '晨煦', 'trait': '阳光温暖、活力朝气', 'scene': '通用男声', 'language': '中文', 'gender': '男', 'type': 'qwen-tts'},
+    {'voice_id': 'Chelsie', 'name': '千雪', 'trait': '二次元虚拟女友', 'scene': '二次元', 'language': '中文', 'gender': '女', 'type': 'qwen-tts'},
+    {'voice_id': 'Momo', 'name': '茉兔', 'trait': '撒娇搞怪，逗你开心', 'scene': '二次元', 'language': '中文', 'gender': '女', 'type': 'qwen-tts'},
+    {'voice_id': 'Vivian', 'name': '十三', 'trait': '拽拽的、可爱的小暴躁', 'scene': '二次元', 'language': '中文', 'gender': '女', 'type': 'qwen-tts'},
+    {'voice_id': 'Moon', 'name': '月白', 'trait': '率性帅气', 'scene': '通用男声', 'language': '中文', 'gender': '男', 'type': 'qwen-tts'},
+    {'voice_id': 'Kai', 'name': '凯', 'trait': '耳朵的一场SPA', 'scene': '通用男声', 'language': '中文', 'gender': '男', 'type': 'qwen-tts'},
+    {'voice_id': 'Nofish', 'name': '不吃鱼', 'trait': '不会翘舌音的设计师', 'scene': '通用男声', 'language': '中文', 'gender': '男', 'type': 'qwen-tts'},
+    {'voice_id': 'Bella', 'name': '萌宝', 'trait': '喝酒不打醉拳的小萝莉', 'scene': '童声', 'language': '中文', 'gender': '女', 'type': 'qwen-tts'},
+    {'voice_id': 'Jennifer', 'name': '詹妮弗', 'trait': '品牌级、电影质感般美语女声', 'scene': '出海营销', 'language': '英文', 'gender': '女', 'type': 'qwen-tts'},
+    {'voice_id': 'Ryan', 'name': '甜茶', 'trait': '节奏拉满，戏感炸裂', 'scene': '通用男声', 'language': '中文', 'gender': '男', 'type': 'qwen-tts'},
+    {'voice_id': 'Katerina', 'name': '卡捷琳娜', 'trait': '御姐音色，韵律回味十足', 'scene': '通用女声', 'language': '中文', 'gender': '女', 'type': 'qwen-tts'},
+    {'voice_id': 'Aiden', 'name': '艾登', 'trait': '精通厨艺的美语大男孩', 'scene': '出海营销', 'language': '英文', 'gender': '男', 'type': 'qwen-tts'},
+    {'voice_id': 'Mia', 'name': '乖小妹', 'trait': '温顺如春水，乖巧如初雪', 'scene': '社交陪伴', 'language': '中文', 'gender': '女', 'type': 'qwen-tts'},
+    {'voice_id': 'Mochi', 'name': '沙小弥', 'trait': '聪明伶俐的小大人', 'scene': '童声', 'language': '中文', 'gender': '男', 'type': 'qwen-tts'},
+    {'voice_id': 'Bellona', 'name': '燕铮莺', 'trait': '声音洪亮，千面人声', 'scene': '有声书', 'language': '中文', 'gender': '女', 'type': 'qwen-tts'},
+    {'voice_id': 'Vincent', 'name': '田叔', 'trait': '沙哑烟嗓，江湖豪情', 'scene': '有声书', 'language': '中文', 'gender': '男', 'type': 'qwen-tts'},
+    {'voice_id': 'Bunny', 'name': '萌小姬', 'trait': '萌属性爆棚的小萝莉', 'scene': '二次元', 'language': '中文', 'gender': '女', 'type': 'qwen-tts'},
+    {'voice_id': 'Neil', 'name': '阿闻', 'trait': '字正腔圆的新闻主持人', 'scene': '新闻播报', 'language': '中文', 'gender': '男', 'type': 'qwen-tts'},
+    {'voice_id': 'Elias', 'name': '墨讲师', 'trait': '学科严谨，叙事技巧', 'scene': '知识讲解', 'language': '中文', 'gender': '女', 'type': 'qwen-tts'},
+    {'voice_id': 'Arthur', 'name': '徐大爷', 'trait': '质朴嗓音，摇开满村奇闻', 'scene': '有声书', 'language': '中文', 'gender': '男', 'type': 'qwen-tts'},
+    {'voice_id': 'Nini', 'name': '邻家妹妹', 'trait': '软又黏的嗓音', 'scene': '社交陪伴', 'language': '中文', 'gender': '女', 'type': 'qwen-tts'},
+    {'voice_id': 'Pip', 'name': '顽屁小孩', 'trait': '调皮捣蛋却充满童真', 'scene': '童声', 'language': '中文', 'gender': '男', 'type': 'qwen-tts'},
+    {'voice_id': 'Stella', 'name': '少女阿月', 'trait': '甜到发腻的迷糊少女音', 'scene': '二次元', 'language': '中文', 'gender': '女', 'type': 'qwen-tts'},
+    {'voice_id': 'Jada', 'name': '上海-阿珍', 'trait': '风风火火的沪上阿姐', 'scene': '方言', 'language': '上海话', 'gender': '女', 'type': 'qwen-tts'},
+    {'voice_id': 'Dylan', 'name': '北京-晓东', 'trait': '北京胡同里长大的少年', 'scene': '方言', 'language': '北京话', 'gender': '男', 'type': 'qwen-tts'},
+    {'voice_id': 'Li', 'name': '南京-老李', 'trait': '耐心的瑜伽老师', 'scene': '方言', 'language': '南京话', 'gender': '男', 'type': 'qwen-tts'},
+    {'voice_id': 'Marcus', 'name': '陕西-秦川', 'trait': '面宽话短，心实声沉', 'scene': '方言', 'language': '陕西话', 'gender': '男', 'type': 'qwen-tts'},
+    {'voice_id': 'Roy', 'name': '闽南-阿杰', 'trait': '诙谐直爽、市井活泼', 'scene': '方言', 'language': '闽南语', 'gender': '男', 'type': 'qwen-tts'},
+    {'voice_id': 'Peter', 'name': '天津-李彼得', 'trait': '天津相声，专业捧哏', 'scene': '方言', 'language': '天津话', 'gender': '男', 'type': 'qwen-tts'},
+    {'voice_id': 'Sunny', 'name': '四川-晴儿', 'trait': '甜到心里的川妹子', 'scene': '方言', 'language': '四川话', 'gender': '女', 'type': 'qwen-tts'},
+    {'voice_id': 'Eric', 'name': '四川-程川', 'trait': '跳脱市井的成都男子', 'scene': '方言', 'language': '四川话', 'gender': '男', 'type': 'qwen-tts'},
+    {'voice_id': 'Rocky', 'name': '粤语-阿强', 'trait': '幽默风趣，在线陪聊', 'scene': '方言', 'language': '粤语', 'gender': '男', 'type': 'qwen-tts'},
+    {'voice_id': 'Kiki', 'name': '粤语-阿清', 'trait': '甜美的港妹闺蜜', 'scene': '方言', 'language': '粤语', 'gender': '女', 'type': 'qwen-tts'},
+]
+
+# TTS 引擎：cosyvoice / qwen-tts，持久化在 _shared/voices/_engine.txt
+TTS_ENGINE_FILE = VOICES_DIR / '_engine.txt'
+
 
 def _voices_meta() -> dict:
     """读取克隆音色元数据。"""
@@ -3010,9 +3070,13 @@ def _list_clone_voices_from_bailian() -> list[dict]:
 
 @app.get("/api/voices")
 async def api_voices_list():
-    """返回系统音色 + 克隆音色列表。"""
-    # 系统音色
-    voices = list(SYSTEM_VOICES)
+    """返回系统音色 + 克隆音色列表。根据 TTS 引擎返回对应系统音色。"""
+    engine = _get_tts_engine()
+    # 系统音色：根据引擎选择
+    if engine == 'qwen-tts':
+        voices = list(QWEN_TTS_VOICES)
+    else:
+        voices = list(SYSTEM_VOICES)
     # 克隆音色：本地元数据 + 百炼实时状态
     local_meta = _voices_meta()
     bailian_voices = _list_clone_voices_from_bailian()
@@ -3029,7 +3093,7 @@ async def api_voices_list():
             'status': status,
             'preview_url': f'/api/voices/preview/{vid}',
         })
-    return {'voices': voices, 'default': _get_default_voice()}
+    return {'voices': voices, 'default': _get_default_voice(), 'engine': engine}
 
 
 class SetDefaultVoiceRequest(BaseModel):
@@ -3042,14 +3106,31 @@ async def api_voices_set_default(req: SetDefaultVoiceRequest):
     voice_id = (req.voice_id or '').strip()
     if not voice_id:
         raise HTTPException(400, 'voice_id 不能为空')
-    # 校验音色存在
-    all_voices = list(SYSTEM_VOICES)
+    # 校验音色存在（两个引擎的系统音色都校验）
+    engine = _get_tts_engine()
+    sys_voices = QWEN_TTS_VOICES if engine == 'qwen-tts' else SYSTEM_VOICES
+    all_voices = list(sys_voices) + list(SYSTEM_VOICES) + list(QWEN_TTS_VOICES)
     local_meta = _voices_meta()
     all_voices.extend([{'voice_id': vid} for vid in local_meta.keys()])
     if not any(v['voice_id'] == voice_id for v in all_voices):
         raise HTTPException(404, f'音色不存在: {voice_id}')
     _set_default_voice(voice_id)
     return {'ok': True, 'default': voice_id}
+
+
+class SetTtsEngineRequest(BaseModel):
+    engine: str  # cosyvoice | qwen-tts
+
+
+@app.post("/api/voices/engine")
+async def api_voices_set_engine(req: SetTtsEngineRequest):
+    """切换 TTS 引擎（cosyvoice / qwen-tts）。切换后恢复该引擎上次的默认音色。"""
+    engine = (req.engine or '').strip()
+    if engine not in ('cosyvoice', 'qwen-tts'):
+        raise HTTPException(400, 'engine 必须是 cosyvoice 或 qwen-tts')
+    _set_tts_engine(engine)
+    # 按引擎分别恢复默认音色（不再覆盖另一引擎的设置）
+    return {'ok': True, 'engine': engine, 'default': _get_default_voice(engine)}
 
 
 @app.get("/api/voices/preview/{voice_id}")
@@ -3079,9 +3160,17 @@ async def api_voices_preview(voice_id: str):
         return FileResponse(str(preview_path), media_type='audio/mpeg')
     text_file = preview_dir / f'{safe_name}.txt'
     text_file.write_text(PREVIEW_TEXT, encoding='utf-8')
-    cmd = [sys.executable, str(SHARED_SCRIPTS / 'tts.py'), 'speak',
-           '--file', str(text_file), '-o', str(preview_path), '--engine', 'auto',
-           '--voice', voice_id]
+    engine = _get_tts_engine()
+    # Qwen-TTS 系统音色：直接调 voice_clone.py qwen-tts provider
+    if engine == 'qwen-tts' and any(v['voice_id'] == voice_id for v in QWEN_TTS_VOICES):
+        cmd = [sys.executable, str(SHARED_SCRIPTS / 'voice_clone.py'), 'clone',
+               '--provider', 'qwen-tts', '--text', PREVIEW_TEXT,
+               '--voice-id', voice_id, '-o', str(preview_path)]
+    else:
+        # CosyVoice 系统音色：走 tts.py → voice_clone.py dashscope provider
+        cmd = [sys.executable, str(SHARED_SCRIPTS / 'tts.py'), 'speak',
+               '--file', str(text_file), '-o', str(preview_path), '--engine', 'auto',
+               '--voice', voice_id]
     try:
         proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True,
                               timeout=60, env=_publish_env())
@@ -3273,7 +3362,123 @@ async def api_voices_clone_delete(voice_id: str):
 # ── 数字人（百炼 悦动人像 EMO）──────────────────────────────────────────
 
 EMO_BASE = 'https://dashscope.aliyuncs.com/api/v1'
-EMO_TASKS: dict[str, dict] = {}  # 内存存任务状态（job_id → {task_id, status, video_path, ...}）
+EMO_TASKS_FILE = LOCAL_OUTPUTS_DIR / '_shared' / 'digital-human' / 'tasks.json'
+EMO_TASKS_LOCK = threading.Lock()
+
+
+def _emo_tasks_load() -> dict[str, dict]:
+    try:
+        return json.loads(EMO_TASKS_FILE.read_text(encoding='utf-8')) if EMO_TASKS_FILE.is_file() else {}
+    except Exception:
+        return {}
+
+
+def _emo_tasks_save(tasks: dict[str, dict]) -> None:
+    with EMO_TASKS_LOCK:
+        EMO_TASKS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = EMO_TASKS_FILE.with_suffix('.json.tmp')
+        tmp.write_text(json.dumps(tasks, ensure_ascii=False, indent=2), encoding='utf-8')
+        os.replace(tmp, EMO_TASKS_FILE)
+
+
+EMO_TASKS: dict[str, dict] = _emo_tasks_load()
+
+# 数字人角色管理：持久化到 outputs/_shared/digital-human/characters/
+DH_CHARACTERS_DIR = LOCAL_OUTPUTS_DIR / '_shared' / 'digital-human' / 'characters'
+DH_CHARACTERS_META = DH_CHARACTERS_DIR / '_meta.json'
+
+
+def _dh_characters_meta() -> dict:
+    """读取数字人角色元数据。"""
+    try:
+        return json.loads(DH_CHARACTERS_META.read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+
+
+def _dh_characters_meta_save(meta: dict) -> None:
+    DH_CHARACTERS_DIR.mkdir(parents=True, exist_ok=True)
+    DH_CHARACTERS_META.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
+
+
+@app.get("/api/digital-human/characters")
+async def api_dh_characters_list():
+    """列出所有数字人角色。"""
+    meta = _dh_characters_meta()
+    characters = []
+    for cid, info in meta.items():
+        characters.append({
+            'id': cid,
+            'name': info.get('name', cid),
+            'desc': info.get('desc', ''),
+            'image_path': info.get('image_path', ''),
+            'image_url': f'/api/digital-human/characters/{cid}/image',
+            'created_at': info.get('created_at', ''),
+        })
+    # 按创建时间排序
+    characters.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+    return {'characters': characters}
+
+
+@app.post("/api/digital-human/characters")
+async def api_dh_characters_create(
+    name: str = Form(...),
+    desc: str = Form(''),
+    image_file: UploadFile = File(...),
+):
+    """创建数字人角色（上传人像照片）。"""
+    name = name.strip()
+    if not name:
+        raise HTTPException(400, '角色名称不能为空')
+    DH_CHARACTERS_DIR.mkdir(parents=True, exist_ok=True)
+    # 保存图片
+    suffix = Path(image_file.filename or 'photo.jpg').suffix.lower() or '.jpg'
+    cid = hashlib.sha256(f'{name}_{time.time()}'.encode()).hexdigest()[:12]
+    img_path = DH_CHARACTERS_DIR / f'{cid}{suffix}'
+    img_path.write_bytes(await image_file.read())
+    img_rel = str(img_path.relative_to(LOCAL_OUTPUTS_DIR))
+    # 保存元数据
+    meta = _dh_characters_meta()
+    meta[cid] = {
+        'name': name,
+        'desc': desc.strip(),
+        'image_path': img_rel,
+        'created_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+    }
+    _dh_characters_meta_save(meta)
+    return {'ok': True, 'id': cid, 'name': name, 'image_path': img_rel}
+
+
+@app.delete("/api/digital-human/characters/{cid}")
+async def api_dh_characters_delete(cid: str):
+    """删除数字人角色。"""
+    meta = _dh_characters_meta()
+    if cid not in meta:
+        raise HTTPException(404, '角色不存在')
+    info = meta.pop(cid)
+    _dh_characters_meta_save(meta)
+    # 删除图片文件
+    img_rel = info.get('image_path', '')
+    if img_rel:
+        img_path = (LOCAL_OUTPUTS_DIR / img_rel).resolve()
+        if img_path.is_file():
+            img_path.unlink(missing_ok=True)
+    return {'ok': True}
+
+
+@app.get("/api/digital-human/characters/{cid}/image")
+async def api_dh_characters_image(cid: str):
+    """返回角色人像照片。"""
+    meta = _dh_characters_meta()
+    if cid not in meta:
+        raise HTTPException(404, '角色不存在')
+    img_rel = meta[cid].get('image_path', '')
+    if not img_rel:
+        raise HTTPException(404, '无图片')
+    img_path = (LOCAL_OUTPUTS_DIR / img_rel).resolve()
+    if not img_path.is_file():
+        raise HTTPException(404, '图片文件不存在')
+    return FileResponse(str(img_path))
 
 
 def _bailian_api_key() -> str:
@@ -3375,14 +3580,21 @@ async def api_digital_human_generate(
     pos: str = Form('bottom-right'),
     image: str = Form(''),
     audio: str = Form(''),
+    style_level: str = Form('normal'),  # normal | calm | active
+    character_id: str = Form(''),  # 数字人角色 ID（优先使用角色照片）
     image_file: UploadFile | None = File(None),
     audio_file: UploadFile | None = File(None),
 ):
     """启动数字人生成任务（百炼 EMO）。
 
-    支持两种输入方式：
-    1. 上传文件：image_file/audio_file（File 对象），后端保存到 outputs/_shared/digital-human/uploads/
-    2. 引用 outputs 相对路径：image/audio（字符串，兼容旧接口）
+    支持三种图片输入方式（优先级从高到低）：
+    1. character_id：使用已保存的数字人角色照片
+    2. image_file：上传文件（File 对象），后端保存到 uploads/
+    3. image：引用 outputs 相对路径（兼容旧接口）
+
+    音频支持两种方式：
+    1. audio_file：上传文件
+    2. audio：引用 outputs 相对路径
 
     返回 task_key 用于轮询状态。
     """
@@ -3390,12 +3602,21 @@ async def api_digital_human_generate(
     if not api_key:
         raise HTTPException(500, 'DASHSCOPE_API_KEY 未配置')
 
-    # 解析图片：优先上传文件，否则用 outputs 相对路径
+    # 解析图片：优先角色 ID → 上传文件 → outputs 路径
     upload_dir = OUTPUTS_DIR.resolve() / '_shared' / 'digital-human' / 'uploads'
     upload_dir.mkdir(parents=True, exist_ok=True)
     img_rel = ''
     audio_rel = ''
-    if image_file is not None and image_file.filename:
+
+    if character_id:
+        # 使用数字人角色照片
+        meta = _dh_characters_meta()
+        if character_id not in meta:
+            raise HTTPException(404, f'数字人角色不存在: {character_id}')
+        img_rel = meta[character_id].get('image_path', '')
+        if not img_rel:
+            raise HTTPException(400, '该角色没有人像照片')
+    elif image_file is not None and image_file.filename:
         suffix = Path(image_file.filename).suffix.lower() or '.jpg'
         img_path = upload_dir / f'img_{int(time.time()*1000)}{suffix}'
         img_path.write_bytes(await image_file.read())
@@ -3403,7 +3624,7 @@ async def api_digital_human_generate(
     elif image:
         img_rel = image
     else:
-        raise HTTPException(400, '请上传人像照片或选择已有图片')
+        raise HTTPException(400, '请选择数字人角色或上传人像照片')
 
     if audio_file is not None and audio_file.filename:
         suffix = Path(audio_file.filename).suffix.lower() or '.mp3'
@@ -3415,7 +3636,7 @@ async def api_digital_human_generate(
     else:
         raise HTTPException(400, '请上传音频文件或选择已有音频')
 
-    img_path = _safe_output_path(img_rel)
+    img_path = _safe_local_output_path(img_rel) if character_id else _safe_output_path(img_rel)
     audio_path = _safe_output_path(audio_rel)
     if not img_path.is_file():
         raise HTTPException(404, f'图片不存在: {img_rel}')
@@ -3430,7 +3651,7 @@ async def api_digital_human_generate(
     # EMO 检测 + 创建任务
     try:
         bbox = _emo_detect(image_url, api_key)
-        task_id = _emo_create_task(image_url, audio_url, bbox['face_bbox'], bbox['ext_bbox'], api_key)
+        task_id = _emo_create_task(image_url, audio_url, bbox['face_bbox'], bbox['ext_bbox'], api_key, style_level)
     except HTTPError as e:
         detail = e.read().decode()[:300] if hasattr(e, 'read') else str(e)
         raise HTTPException(502, f'EMO 调用失败: {detail}')
@@ -3443,9 +3664,11 @@ async def api_digital_human_generate(
         'image': img_rel,
         'audio': audio_rel,
         'pos': pos,
+        'style_level': style_level,
         'video_path': '',
         'created_at': time.strftime('%Y-%m-%d %H:%M:%S'),
     }
+    _emo_tasks_save(EMO_TASKS)
     return {'ok': True, 'task_key': task_key, 'task_id': task_id, 'status': 'PENDING'}
 
 
@@ -3465,9 +3688,7 @@ async def api_digital_human_status(task_key: str):
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
     status = result['status']
-    task['status'] = status
     if status == 'SUCCEEDED' and result['video_url']:
-        # 下载视频到本地
         dh_dir = OUTPUTS_DIR.resolve() / '_shared' / 'digital-human'
         dh_dir.mkdir(parents=True, exist_ok=True)
         video_path = dh_dir / f'{task_key}.mp4'
@@ -3478,6 +3699,8 @@ async def api_digital_human_status(task_key: str):
             task['video_path'] = str(video_path.relative_to(OUTPUTS_DIR.resolve()))
         except Exception as e:
             return {'status': 'error', 'message': f'视频下载失败: {e}'}
+    task['status'] = status
+    _emo_tasks_save(EMO_TASKS)
     return {'status': status, 'video_path': task.get('video_path', '')}
 
 
@@ -3500,25 +3723,61 @@ def _split_captions(body: str, n: int) -> list[str]:
 
 # 图文转视频默认配音音色（阿里云百炼 CosyVoice 系统音色，走闭源好嗓子）
 NARRATION_VOICE_FALLBACK = 'longxiaochun_v2'  # 龙小淳 · 知性积极女声，适合口播/讲解
-DEFAULT_VOICE_FILE = VOICES_DIR / '_default_voice.txt'  # 用户自定义默认音色
+QWEN_TTS_VOICE_FALLBACK = 'Cherry'  # 芊悦 · 阳光积极女声
+# 按引擎分别保存默认音色，切换引擎时各自恢复
+DEFAULT_VOICE_FILES = {
+    'cosyvoice': VOICES_DIR / '_default_voice_cosyvoice.txt',
+    'qwen-tts': VOICES_DIR / '_default_voice_qwen_tts.txt',
+}
 
 
-def _get_default_voice() -> str:
-    """读取用户设置的默认音色；未设置则返回回退值。"""
+def _get_default_voice(engine: str | None = None) -> str:
+    """读取用户设置的默认音色（按引擎分别保存）；未设置则返回该引擎回退值。"""
+    eng = engine or _get_tts_engine()
+    fallback = QWEN_TTS_VOICE_FALLBACK if eng == 'qwen-tts' else NARRATION_VOICE_FALLBACK
+    f = DEFAULT_VOICE_FILES.get(eng, DEFAULT_VOICE_FILES['cosyvoice'])
     try:
-        if DEFAULT_VOICE_FILE.is_file():
-            vid = DEFAULT_VOICE_FILE.read_text(encoding='utf-8').strip()
+        if f.is_file():
+            vid = f.read_text(encoding='utf-8').strip()
             if vid:
                 return vid
     except Exception:
         pass
-    return NARRATION_VOICE_FALLBACK
+    return fallback
 
 
-def _set_default_voice(voice_id: str) -> None:
-    """持久化默认音色到本地文件。"""
+def _set_default_voice(voice_id: str, engine: str | None = None) -> None:
+    """持久化默认音色到对应引擎的文件。"""
+    eng = engine or _get_tts_engine()
+    f = DEFAULT_VOICE_FILES.get(eng, DEFAULT_VOICE_FILES['cosyvoice'])
     VOICES_DIR.mkdir(parents=True, exist_ok=True)
-    DEFAULT_VOICE_FILE.write_text(voice_id, encoding='utf-8')
+    f.write_text(voice_id, encoding='utf-8')
+
+
+def _get_tts_engine() -> str:
+    """读取当前 TTS 引擎：cosyvoice（默认）或 qwen-tts。"""
+    try:
+        if TTS_ENGINE_FILE.is_file():
+            eng = TTS_ENGINE_FILE.read_text(encoding='utf-8').strip()
+            if eng in ('cosyvoice', 'qwen-tts'):
+                return eng
+    except Exception:
+        pass
+    return 'cosyvoice'
+
+
+def _set_tts_engine(engine: str) -> None:
+    """持久化 TTS 引擎到本地文件。"""
+    VOICES_DIR.mkdir(parents=True, exist_ok=True)
+    TTS_ENGINE_FILE.write_text(engine, encoding='utf-8')
+
+
+def _voice_engine(voice_id: str) -> str | None:
+    if any(v['voice_id'] == voice_id for v in QWEN_TTS_VOICES):
+        return 'qwen-tts'
+    if any(v['voice_id'] == voice_id for v in SYSTEM_VOICES) or voice_id in _voices_meta():
+        return 'cosyvoice'
+    return None
 
 
 def _llm_rewrite_narration(title: str, body: str, n_shots: int, out_dir: Path) -> list[str] | None:
@@ -3581,18 +3840,32 @@ def _llm_rewrite_narration(title: str, body: str, n_shots: int, out_dir: Path) -
 
 
 def _generate_narration_segment(text: str, out_path: Path, voice: str,
-                                srt_path: Path | None = None) -> tuple[Path | None, str]:
-    """用 tts.py 合成单段口播。srt_path 非空时同时生成分句字幕。返回 (音频路径, 错误信息)。"""
+                                srt_path: Path | None = None,
+                                engine: str | None = None) -> tuple[Path | None, str]:
+    """合成单段口播。srt_path 非空时同时生成分句字幕。返回 (音频路径, 错误信息)。
+
+    根据 TTS 引擎选择调用方式：
+    - qwen-tts：voice_clone.py clone --provider qwen-tts（Qwen-TTS 不支持 SRT，字幕按句切分）
+    - cosyvoice：tts.py speak --engine closed（走 voice_clone.py dashscope，支持 SRT）
+    """
     text = text.strip()
     if not text:
         return None, '空文本'
-    text_file = out_path.with_suffix('.txt')
-    text_file.write_text(text, encoding='utf-8')
-    cmd = [sys.executable, str(SHARED_SCRIPTS / 'tts.py'), 'speak',
-           '--file', str(text_file), '-o', str(out_path), '--engine', 'auto',
-           '--voice', voice]
-    if srt_path:
-        cmd += ['--subtitle', str(srt_path)]
+    engine = engine or _voice_engine(voice)
+    if engine == 'qwen-tts':
+        # Qwen-TTS：直接调 voice_clone.py，不支持 --subtitle
+        cmd = [sys.executable, str(SHARED_SCRIPTS / 'voice_clone.py'), 'clone',
+               '--provider', 'qwen-tts', '--text', text,
+               '--voice-id', voice, '-o', str(out_path)]
+    else:
+        # CosyVoice：走 tts.py（支持 --subtitle 生成分句 SRT）
+        text_file = out_path.with_suffix('.txt')
+        text_file.write_text(text, encoding='utf-8')
+        cmd = [sys.executable, str(SHARED_SCRIPTS / 'tts.py'), 'speak',
+               '--file', str(text_file), '-o', str(out_path), '--engine', 'closed',
+               '--voice', voice]
+        if srt_path:
+            cmd += ['--subtitle', str(srt_path)]
     try:
         proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True,
                               timeout=120, env=_publish_env())
@@ -3601,7 +3874,43 @@ def _generate_narration_segment(text: str, out_path: Path, voice: str,
     if proc.returncode != 0 or not out_path.is_file() or out_path.stat().st_size == 0:
         detail = '\n'.join((proc.stderr or proc.stdout or '').strip().splitlines()[-2:])[:200]
         return None, detail or 'TTS 合成失败'
+    # Qwen-TTS 不支持 SRT：按句切分生成字幕（用 ffprobe 探测时长）
+    if srt_path and engine == 'qwen-tts' and not srt_path.is_file():
+        try:
+            _generate_srt_by_sentences(text, out_path, srt_path)
+        except Exception:
+            pass
     return out_path, ''
+
+
+def _generate_srt_by_sentences(text: str, audio_path: Path, srt_path: Path) -> None:
+    """Qwen-TTS 不返回时间戳，按句切分 + ffprobe 探测总时长生成 SRT。"""
+    import re
+    parts = [s.strip() for s in re.split(r'(?<=[。！？!?；;\n])', text) if s.strip()]
+    if not parts:
+        return
+    total_dur = _probe_audio_duration(audio_path)
+    if total_dur <= 0:
+        total_dur = max(1.0, len(text) / 4.5)  # 回退：中文约 4.5 字/秒
+    # 按字数比例分配时间
+    total_chars = sum(len(s) for s in parts)
+    lines = []
+    t = 0.0
+    for i, s in enumerate(parts, 1):
+        dur = total_dur * len(s) / total_chars if total_chars else total_dur / len(parts)
+        lines.append(f"{i}\n{_srt_ts(t)} --> {_srt_ts(t + dur)}\n{s}\n")
+        t += dur
+    srt_path.write_text('\n'.join(lines), encoding='utf-8')
+
+
+def _srt_ts(sec: float) -> str:
+    if sec < 0:
+        sec = 0.0
+    ms = int(round(sec * 1000))
+    h, ms = divmod(ms, 3600000)
+    m, ms = divmod(ms, 60000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
 def _merge_srt_files(seg_srt_paths: list[Path], seg_durations: list[float], out_srt: Path) -> None:
@@ -3666,15 +3975,75 @@ def _probe_audio_duration(path: Path) -> float:
         return 0.0
 
 
-def _overlay_digital_human(main_video: Path, dh_image_rel: str, audio_path: Path,
-                           pos: str, work_dir: Path) -> str:
-    """用百炼 EMO 生成数字人视频并 overlay 到主视频。返回描述信息（成功）或空串（跳过/失败）。"""
+def _verify_video_output(path: Path) -> tuple[bool, str]:
+    if not path.is_file() or path.stat().st_size == 0:
+        return False, '成片文件不存在或为空'
+    try:
+        proc = subprocess.run(
+            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration:stream=codec_type',
+             '-of', 'json', str(path)], capture_output=True, text=True, timeout=15)
+        data = json.loads(proc.stdout or '{}')
+        duration = float(data.get('format', {}).get('duration') or 0)
+        stream_types = {s.get('codec_type') for s in data.get('streams', [])}
+        if duration <= 0 or not {'video', 'audio'}.issubset(stream_types):
+            return False, f'成片轨道或时长异常: duration={duration}, streams={sorted(stream_types)}'
+        return True, ''
+    except Exception as e:
+        return False, f'成片校验失败: {e}'
+
+
+def _resolve_requested_bgm(bgm_ref: str, title: str, body: str) -> tuple[Path | None, str]:
+    if not bgm_ref.strip():
+        return _video_bgm(title, body), ''
+    try:
+        requested = _safe_local_output_path(bgm_ref.strip())
+    except HTTPException as e:
+        return None, str(e.detail)
+    allowed = {p.resolve() for p in _bgm_tracks()}
+    if requested.resolve() not in allowed or not requested.is_file():
+        return None, f'BGM 不在当前曲库中: {bgm_ref}'
+    return requested, ''
+
+
+def _video_generation_fingerprint(req: PublishJobRequest, images: list[Path], voice: str,
+                                  engine: str, bgm: Path | None) -> str:
+    output_root = OUTPUTS_DIR.resolve()
+    local_output_root = LOCAL_OUTPUTS_DIR.resolve()
+    payload = {
+        'title': req.title,
+        'body': req.body,
+        'images': [
+            {'path': str(p.resolve().relative_to(output_root)),
+             'size': p.stat().st_size, 'mtime': p.stat().st_mtime_ns}
+            for p in images
+        ],
+        'tts_engine': engine,
+        'voice': voice,
+        'bgm': str(bgm.resolve().relative_to(local_output_root)) if bgm else '',
+        'digital_human': req.digital_human,
+        'digital_human_pos': req.digital_human_pos,
+    }
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()[:12]
+
+
+def _overlay_digital_human(main_video: Path, character_id: str, audio_path: Path,
+                           pos: str, work_dir: Path) -> tuple[bool, str]:
+    """用数字人管理角色照片和实际口播音频生成 EMO 视频并叠加。"""
     api_key = _bailian_api_key()
     if not api_key:
-        return '数字人跳过（未配置 DASHSCOPE_API_KEY）'
-    img_path = _safe_output_path(dh_image_rel)
-    if not img_path.is_file():
-        return f'数字人跳过（图片不存在: {dh_image_rel}）'
+        return False, '数字人失败（未配置 DASHSCOPE_API_KEY）'
+    meta = _dh_characters_meta()
+    if character_id not in meta:
+        return False, f'数字人角色不存在: {character_id}'
+    img_rel = meta[character_id].get('image_path', '')
+    if not img_rel:
+        return False, f'数字人角色没有照片: {character_id}'
+    try:
+        img_path = _safe_local_output_path(img_rel)
+    except HTTPException as e:
+        return False, f'数字人角色照片无效: {e.detail}'
+    if not audio_path.is_file() or audio_path.stat().st_size == 0:
+        return False, '数字人实际口播音频不存在或为空'
     try:
         # 上传图片和音频到百炼
         image_url = _upload_to_bailian(img_path, api_key)
@@ -3705,19 +4074,19 @@ def _overlay_digital_human(main_video: Path, dh_image_rel: str, audio_path: Path
                 out_final = main_video.with_suffix('.dh.mp4')
                 cmd = ['ffmpeg', '-y', '-i', str(main_video), '-i', str(dh_video),
                        '-filter_complex',
-                       f'[1:v]scale=200:200[dh];[0:v][dh]overlay={overlay_pos}',
+                       f'[1:v]scale=200:-2[dh];[0:v][dh]overlay={overlay_pos}',
                        '-c:a', 'copy', '-c:v', 'libx264', '-preset', 'fast',
                        str(out_final)]
                 proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                if proc.returncode == 0 and out_final.is_file():
+                if proc.returncode == 0 and out_final.is_file() and out_final.stat().st_size > 0:
                     out_final.replace(main_video)
-                    return '数字人已叠加'
-                return '数字人 overlay 失败'
+                    return True, '数字人已叠加'
+                return False, '数字人 overlay 失败'
             if result['status'] in ('FAILED', 'CANCELED'):
-                return f'数字人生成失败: {result["status"]}'
-        return '数字人超时（>10min）'
+                return False, f'数字人生成失败: {result["status"]}'
+        return False, '数字人超时（>10min）'
     except Exception as e:
-        return f'数字人跳过: {e}'
+        return False, f'数字人失败: {e}'
 
 
 def _generate_publish_video(job_id: str, req: PublishJobRequest) -> dict:
@@ -3727,25 +4096,74 @@ def _generate_publish_video(job_id: str, req: PublishJobRequest) -> dict:
                 'media_path': str(videos[0].relative_to(OUTPUTS_DIR.resolve()))}
     if not images:
         return {'status': 'fail', 'message': '没有可用于生成视频的图片', 'verified': False}
-    # 音色：Job 请求指定 > 默认
+    if not req.generation_confirmed:
+        return {'status': 'fail', 'message': '尚未确认 TTS、BGM、数字人及付费调用上限', 'verified': False}
+
     narration_voice = req.voice.strip() if req.voice and req.voice.strip() else _get_default_voice()
-    fingerprint = hashlib.sha256((req.title + '|' + '|'.join(str(p) for p in images)
-                                 + '|' + narration_voice).encode('utf-8')).hexdigest()[:12]
+    tts_engine = _voice_engine(narration_voice)
+    if not tts_engine:
+        return {'status': 'fail', 'message': f'页面音色不存在或不支持: {narration_voice}', 'verified': False}
+
+    bgm, bgm_error = _resolve_requested_bgm(req.bgm, req.title, req.body)
+    if bgm_error:
+        return {'status': 'fail', 'message': bgm_error, 'verified': False}
+
+    dh_meta = _dh_characters_meta()
+    if req.digital_human and req.digital_human not in dh_meta:
+        return {'status': 'fail', 'message': f'数字人角色不存在: {req.digital_human}', 'verified': False}
+
+    fingerprint = _video_generation_fingerprint(req, images, narration_voice, tts_engine, bgm)
     output_root = OUTPUTS_DIR.resolve()
     out_dir = output_root / '_generated_videos'
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f'{fingerprint}.mp4'
+    manifest_path = out_dir / f'{fingerprint}.manifest.json'
     rel = str(out.relative_to(output_root))
-    if out.is_file() and out.stat().st_size > 0:
+    try:
+        cached_manifest = json.loads(manifest_path.read_text(encoding='utf-8')) if manifest_path.is_file() else {}
+    except Exception:
+        cached_manifest = {}
+    cached_ok, _ = _verify_video_output(out)
+    if not req.force_regenerate and cached_ok and cached_manifest.get('status') == 'completed':
         if rel not in req.media:
             req.media.append(rel)
-        return {'status': 'verified', 'message': '视频版已存在，直接复用', 'verified': True, 'media_path': rel}
+        return {'status': 'verified', 'message': '视频版配置一致且已通过自检，直接复用',
+                'verified': True, 'media_path': rel,
+                'manifest_path': str(manifest_path.relative_to(output_root))}
 
     n_shots = len(images)
-    work_dir = out_dir / f'{job_id}_work'
+    work_dir = out_dir / f'{fingerprint}_assets'
     work_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        'version': 1,
+        'status': 'running',
+        'fingerprint': fingerprint,
+        'created_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'configuration': {
+            'title': req.title,
+            'images': [str(p.relative_to(output_root)) for p in images],
+            'tts_engine': tts_engine,
+            'voice_id': narration_voice,
+            'bgm': str(bgm.relative_to(LOCAL_OUTPUTS_DIR.resolve())) if bgm else '',
+            'digital_human_character_id': req.digital_human,
+            'digital_human_image': dh_meta.get(req.digital_human, {}).get('image_path', ''),
+            'digital_human_pos': req.digital_human_pos,
+        },
+        'paid_operations': [
+            {'type': 'script-rewrite', 'provider': 'dashscope', 'model': 'qwen-plus', 'max_calls': 1},
+            {'type': 'tts', 'provider': tts_engine, 'max_calls': n_shots * 4},
+            *([{'type': 'digital-human', 'provider': 'dashscope', 'model': 'emo-v1', 'max_calls': 1}]
+              if req.digital_human else []),
+        ],
+    }
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
 
-    # 1. LLM 改写口播稿（失败降级为按句切分）
+    def fail(message: str, status: str = 'fail', **extra) -> dict:
+        manifest['status'] = status
+        manifest['error'] = message
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
+        return {'status': status, 'message': message, 'verified': False, **extra}
+
     narration_scripts = _llm_rewrite_narration(req.title, req.body, n_shots, work_dir)
     if narration_scripts is None:
         narration_scripts = _split_captions(req.body, n_shots)
@@ -3753,106 +4171,102 @@ def _generate_publish_video(job_id: str, req: PublishJobRequest) -> dict:
     else:
         narration_source = 'LLM 改写'
 
-    # 2. 逐段 TTS 合成口播（每段对应一张图，音画同步）+ 逐句字幕
     seg_paths: list[Path] = []
     seg_durations: list[float] = []
     seg_srt_paths: list[Path] = []
-    narration_ok = True
     for i, script in enumerate(narration_scripts):
         seg_path = work_dir / f'narration_{i:02d}.mp3'
         seg_srt = work_dir / f'narration_{i:02d}.srt'
-        ok, err = _generate_narration_segment(script, seg_path, narration_voice, seg_srt)
-        if ok:
-            seg_paths.append(seg_path)
-            seg_durations.append(_probe_audio_duration(seg_path))
-            seg_srt_paths.append(seg_srt)
-        else:
-            narration_ok = False
-            break
+        ok, err = _generate_narration_segment(
+            script, seg_path, narration_voice, seg_srt, engine=tts_engine)
+        if not ok:
+            return fail(f'TTS 失败（音色 {narration_voice}）: {err}')
+        duration = _probe_audio_duration(seg_path)
+        if duration <= 0:
+            return fail(f'TTS 输出时长异常: narration_{i:02d}.mp3')
+        seg_paths.append(seg_path)
+        seg_durations.append(duration)
+        seg_srt_paths.append(seg_srt)
 
-    # 3. 拼接口播为完整 narration（用 ffmpeg concat）
-    narration_path = None
-    if narration_ok and seg_paths:
-        full_narration = work_dir / 'narration_full.mp3'
-        concat_list = work_dir / 'narration_list.txt'
-        concat_list.write_text(''.join(f"file '{p}'\n" for p in seg_paths), encoding='utf-8')
-        try:
-            subprocess.run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', str(concat_list),
-                            '-c:a', 'libmp3lame', '-b:a', '128k', str(full_narration)],
-                           capture_output=True, text=True, timeout=60)
-            if full_narration.is_file() and full_narration.stat().st_size > 0:
-                narration_path = full_narration
-        except Exception:
-            narration_path = None
+    full_narration = work_dir / 'narration_full.mp3'
+    concat_list = work_dir / 'narration_list.txt'
+    concat_list.write_text(''.join(f"file '{p}'\n" for p in seg_paths), encoding='utf-8')
+    try:
+        concat_proc = subprocess.run(
+            ['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', str(concat_list),
+             '-c:a', 'libmp3lame', '-b:a', '128k', str(full_narration)],
+            capture_output=True, text=True, timeout=60)
+    except Exception as e:
+        return fail(f'口播音频拼接失败: {e}')
+    if concat_proc.returncode != 0 or not full_narration.is_file() or full_narration.stat().st_size == 0:
+        return fail('口播音频拼接失败')
+    narration_path = full_narration
 
-    # 3.5 合并逐句字幕（跟随口播逐句显示，单行）
-    full_srt = None
-    if narration_ok and seg_srt_paths and any(p.is_file() for p in seg_srt_paths):
-        full_srt = work_dir / 'narration_full.srt'
-        try:
-            _merge_srt_files(seg_srt_paths, seg_durations, full_srt)
-            if not full_srt.is_file() or full_srt.stat().st_size == 0:
-                full_srt = None
-        except Exception:
-            full_srt = None
+    full_srt = work_dir / 'narration_full.srt'
+    try:
+        _merge_srt_files(seg_srt_paths, seg_durations, full_srt)
+    except Exception as e:
+        return fail(f'字幕合并失败: {e}')
+    if not full_srt.is_file() or full_srt.stat().st_size == 0:
+        return fail('字幕合并失败：输出为空')
 
-    # 4. BGM 自动选曲（已支持降级）
-    bgm = _video_bgm(req.title, req.body)
-
-    # 5. 构建 storyboard：每镜时长 = 对应段口播时长（音画同步），无口播则 3s
-    #    不设 caption——字幕改用 TTS 生成的逐句 SRT（跟随口播逐句显示，单行）
-    shots = []
-    for i, img in enumerate(images):
-        dur = max(1.5, seg_durations[i]) if i < len(seg_durations) and seg_durations[i] > 0 else 3.0
-        shots.append({'image': str(img), 'duration': round(dur, 2), 'motion': 'static'})
+    shots = [
+        {'image': str(img), 'duration': round(max(1.5, seg_durations[i]), 2), 'motion': 'static'}
+        for i, img in enumerate(images)
+    ]
     storyboard = {
         'size': '1080x1920',
         'image_motion': 'static',
         'shots': shots,
+        'narration': str(narration_path),
+        'subtitle': str(full_srt),
     }
-    if narration_path:
-        storyboard['narration'] = str(narration_path)
-    if full_srt:
-        storyboard['subtitle'] = str(full_srt)
     if bgm:
         storyboard['bgm'] = str(bgm)
-        storyboard['bgm_volume'] = 0.35  # BGM 明显但不盖口播
+        storyboard['bgm_volume'] = 0.35
     sb_path = work_dir / 'storyboard.json'
     sb_path.write_text(json.dumps(storyboard, ensure_ascii=False), encoding='utf-8')
 
-    # 6. 调 assemble.py 合成
+    base_out = work_dir / 'base.mp4'
     assemble_script = PROJECT_ROOT / 'skills' / 'openclaw' / 'auto-short-video' / 'scripts' / 'assemble.py'
-    cmd = [sys.executable, str(assemble_script), 'assemble', '--storyboard', str(sb_path), '-o', str(out)]
+    cmd = [sys.executable, str(assemble_script), 'assemble', '--storyboard', str(sb_path), '-o', str(base_out)]
     try:
         proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True,
                               timeout=900, env=_publish_env())
     except subprocess.TimeoutExpired:
-        return {'status': 'timeout', 'message': '视频生成超时（>900s）', 'verified': False}
-    if proc.returncode != 0 or not out.is_file() or out.stat().st_size == 0:
+        return fail('视频生成超时（>900s）', status='timeout')
+    if proc.returncode != 0 or not base_out.is_file() or base_out.stat().st_size == 0:
         detail = '\n'.join((proc.stderr or proc.stdout or '').strip().splitlines()[-4:])[:500]
-        return {'status': 'fail', 'message': detail or '视频生成失败', 'verified': False,
-                'returncode': proc.returncode, 'stdout': (proc.stdout or '')[-2000:], 'stderr': (proc.stderr or '')[-2000:]}
+        return fail(detail or '视频生成失败', returncode=proc.returncode,
+                    stdout=(proc.stdout or '')[-2000:], stderr=(proc.stderr or '')[-2000:])
 
-    # 6.5 数字人 overlay（可选）
     dh_msg = ''
-    if req.digital_human and narration_path and narration_path.is_file():
-        dh_msg = _overlay_digital_human(out, req.digital_human, narration_path, req.digital_human_pos, work_dir)
+    if req.digital_human:
+        dh_ok, dh_msg = _overlay_digital_human(
+            base_out, req.digital_human, narration_path, req.digital_human_pos, work_dir)
+        if not dh_ok:
+            return fail(dh_msg)
 
-    # 清理工作目录
-    try:
-        shutil.rmtree(work_dir, ignore_errors=True)
-    except Exception:
-        pass
+    shutil.copy2(base_out, out)
+    verified, verify_error = _verify_video_output(out)
+    if not verified:
+        return fail(verify_error)
+
+    manifest['status'] = 'completed'
+    manifest['completed_at'] = time.strftime('%Y-%m-%d %H:%M:%S')
+    manifest['output'] = rel
+    manifest['assets_dir'] = str(work_dir.relative_to(output_root))
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
 
     if rel not in req.media:
         req.media.append(rel)
-    parts = [f'口播({narration_source})' if narration_path else '无口播',
-            f'BGM {bgm.name}' if bgm else '静音']
+    parts = [f'口播({narration_source}，{narration_voice})', f'BGM {bgm.name}' if bgm else '静音']
     if dh_msg:
         parts.append(dh_msg)
     return {'status': 'verified', 'message': f'视频版已生成 · {" · ".join(parts)}',
-            'verified': True, 'media_path': rel, 'returncode': proc.returncode,
-            'stdout': (proc.stdout or '')[-2000:], 'stderr': (proc.stderr or '')[-2000:]}
+            'verified': True, 'media_path': rel, 'manifest_path': str(manifest_path.relative_to(output_root)),
+            'returncode': proc.returncode, 'stdout': (proc.stdout or '')[-2000:],
+            'stderr': (proc.stderr or '')[-2000:]}
 
 
 def _job_path(job_id: str) -> Path:
