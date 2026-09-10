@@ -15,4 +15,4 @@
 
 ## 说明
 
-文/图生视频 + 数字人首帧驱动，6 个可插拔 provider：DashScope / ARK / Kling / OpenAI-compatible / 小红书 MaaS / Agnes。异步提交→轮询→下载，统一声明原生音频与对白能力；Kling 用标准库实现 HS256 JWT。Agnes 已用真实 key 端到端验证生成 H.264 + AAC 成片，其余 provider 的实测状态以提交记录为准。model/base_url 可由 env 覆盖。与 video-strategy（策略选型）/video-editing（剪辑）/clipify（切片）划清边界。
+仅用于独立文生视频、图生视频和单张图片动态化，支持 DashScope / ARK / Kling / OpenAI-compatible / 小红书 MaaS / Agnes / SiliconFlow。异步提交→轮询→下载，统一声明原生音频与对白能力。完整口播视频必须路由到 auto-short-video；数字人必须使用管理页角色照片和实际口播音频调用专用接口，普通 I2V 不得冒充数字人。

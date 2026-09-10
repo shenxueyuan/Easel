@@ -1,6 +1,6 @@
 ---
 name: ai-music
-description: "AI 音乐 / BGM 生成：给短视频、社媒内容生成原创背景音乐 / 配乐 / 纯音乐。通过可插拔 provider（阿里 DashScope / Suno 类第三方 API）文生音乐，异步提交→轮询→下载，产物可再裁剪/归一化或加到视频。当用户说“AI 音乐”“AI 配乐”“生成 BGM”“背景音乐”“原创音乐”“AI 作曲”“纯音乐”“给视频配乐”“做首曲子”时使用。与 tts-voiceover 的区别：tts-voiceover 生成人声口播/旁白，ai-music 生成背景音乐/配乐（无人声或带演唱）。"
+description: "仅当用户明确说‘AI 生成音乐’‘生成原创 BGM’‘AI 作曲’‘做一首新曲子’，并确认 provider/model、调用次数和费用后触发。普通的‘加 BGM’‘背景音乐’或完整视频请求不得调用本 SKILL，必须由 auto-short-video 从 Easel BGM 曲库选择。通过 DashScope / Suno 类 API 文生音乐，属于按量计费操作。"
 layer: produce
 ---
 
@@ -11,7 +11,7 @@ layer: produce
 异步提交 → 轮询 → 下载。生成的音乐可再交给 `audio_ops.py` / `video_ops.py`
 做裁剪、归一化或加到视频。
 
-**边界**：本 SKILL 只做背景音乐 / 配乐。要**人声口播 / 旁白 / 朗读**用 `tts-voiceover`。
+**边界**：本 SKILL 只做用户明确确认的付费原创音乐。用户只是要求视频包含 BGM 时，先查询 `/api/bgm` 并复用曲库，禁止进入本流程；完整视频改用 `auto-short-video`。要人声口播用 `tts-voiceover`。
 
 ## 输入
 

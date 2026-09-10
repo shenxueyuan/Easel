@@ -139,7 +139,7 @@ MODEL_GROUPS: dict[str, dict[str, Any]] = {
         "label": "云端语音 / 声音克隆",
         "settings": [
             _key("VOICE_PROVIDER", "默认语音 provider", required=False, secret=False,
-                 choices=("dashscope", "minimax", "fish-audio", "openai-compatible", "gemini")),
+                 choices=("dashscope", "qwen-tts", "minimax", "fish-audio", "openai-compatible", "gemini")),
             _key("VOICE_NARRATOR_VOICE_ID", "默认旁白 voice-id", required=False, secret=False),
         ],
         "providers": [
@@ -148,6 +148,14 @@ MODEL_GROUPS: dict[str, dict[str, Any]] = {
                     _key("DASHSCOPE_API_KEY", "DashScope API Key",
                          aliases=("DASHSCOPE_KEY", "ALIYUN_API_KEY")),
                     _key("DASHSCOPE_TTS_MODEL", "TTS 模型", required=False, secret=False),
+                    _key("DASHSCOPE_BASE_URL", "根地址", required=False, secret=False),
+                ],
+            },
+            {
+                "id": "qwen-tts", "name": "阿里 Qwen-TTS（千问3）", "keys": [
+                    _key("DASHSCOPE_API_KEY", "DashScope API Key",
+                         aliases=("DASHSCOPE_KEY", "ALIYUN_API_KEY")),
+                    _key("QWEN_TTS_MODEL", "TTS 模型（默认 qwen3-tts-flash）", required=False, secret=False),
                     _key("DASHSCOPE_BASE_URL", "根地址", required=False, secret=False),
                 ],
             },

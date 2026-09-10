@@ -14,6 +14,7 @@ layer: produce
 ## 边界（和相邻 SKILL 区分）
 
 - **ai-image-gen（本 SKILL）**：通用 AI 生图，任意题材，文生图 / 图生图 / 变体。
+- **数字人禁止生图替代角色**：数字人必须使用 `/api/digital-human/characters` 中用户配置的角色照片；不得调用本 SKILL 临时生成主播形象。
 - **ecom-details-image**：电商详情页 / 商品主图专用出图（25 场景模板、PDP 序列）。要做电商商品图走它。
 - **card-\* / poster-\***：HTML+CSS 渲染截图（金句卡、小红书卡、海报），**非 AI 生成**，是确定性设计出图。
 - **image-editing**：已有图片的确定性处理（改尺寸/裁剪/加水印/压缩），不生成新画面。

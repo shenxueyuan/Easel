@@ -1,12 +1,14 @@
 ---
 name: ai-video-gen
-description: "AI 视频生成：文生视频 / 图生视频 / 数字人首帧驱动。通过可插拔 provider（通义万相 Wan / 火山 Seedance / 快手可灵 / OpenAI 兼容）异步生成视频，用户自备 API key。当用户说 AI 视频生成、文生视频、图生视频、AI 生成视频、AI 短视频、让图片动起来、数字人视频、生成一段视频 时使用。与 video-strategy（选型/策略）、video-editing（剪辑处理）、clipify（切片）区别：本 SKILL 是从 0 用 AI 生成新视频。"
+description: "仅生成单个 AI 视频片段：文生视频 / 图生视频 / 单张图片动态化。通过可插拔 provider（通义万相 Wan / 火山 Seedance / 快手可灵 / OpenAI 兼容）异步生成视频，用户自备 API key。当用户只要求生成一个视频片段、文生视频、图生视频、让单张图片动起来时使用。用户要求口播视频、TTS、字幕、BGM、数字人或完整成片时，禁止使用本 SKILL 作为主流程，必须改用 auto-short-video；数字人必须复用数字人管理角色照片和实际口播音频，普通 I2V 不能冒充数字人。"
 layer: produce
 ---
 
 # AI 视频生成
 
-> 文生视频 / 图生视频 / 数字人首帧驱动。封装 `shared/scripts/ai_video.py`，多 provider 可插拔、异步提交→轮询→下载。**用户自备 API key**（在 `.env` 配置）。
+> 文生视频 / 图生视频 / 单张图片动态化。封装 `shared/scripts/ai_video.py`，多 provider 可插拔、异步提交→轮询→下载。**用户自备 API key**（在 `.env` 配置）。
+
+> **路由硬门**：只要请求同时包含口播、TTS、字幕、BGM、数字人或“完整成片”中的任一项，立即停止本流程并读取 `../auto-short-video/SKILL.md`。不得新生成虚拟主播图片，不得用普通 I2V 画中画冒充数字人；数字人只能使用 Easel 数字人管理中已配置的角色照片和本次实际口播音频。
 
 ## 前置：配置 API key
 
@@ -61,7 +63,7 @@ python skills/shared/scripts/ai_video.py check --provider dashscope
      --image outputs/主题名/cover.png --prompt "人物微笑挥手，头发轻微飘动" \
      -o outputs/主题名/clip.mp4
    ```
-5. **后续加工**：生成的片段可交给 `video_ops.py`（拼接/加字幕/加 BGM/横竖转）、`auto-subtitle`（字幕）、`tts-voiceover`（配音）串成成片，或直接进 `auto-short-video` 端到端流程。
+5. **后续加工**：仅做单片段剪辑时可交给 `video_ops.py`；一旦还需要字幕、TTS、BGM、数字人或完整成片，必须切换到 `auto-short-video` 端到端流程。
 
 ## Profile 感知
 
