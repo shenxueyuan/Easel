@@ -5026,6 +5026,272 @@ async def api_trends(platforms: str = "weibo,douyin,zhihu", limit: int = 12):
     return {"trends": result, "updated": int(now)}
 
 
+# ── 行业热点（画像驱动）──────────────────────────────────────────────
+INDUSTRY_SOURCES: dict[str, str] = {
+    "ai-news": "https://60s.viki.moe/v2/ai-news",
+    "it-news": "https://60s.viki.moe/v2/it-news",
+    "60s": "https://60s.viki.moe/v2/60s",
+}
+_INDUSTRY_CACHE: dict[str, tuple[float, list]] = {}
+
+
+def _fetch_industry_source(key: str) -> list[dict]:
+    url = INDUSTRY_SOURCES.get(key)
+    if not url:
+        return []
+    try:
+        return _parse_hot(_http_get_json(url))
+    except Exception:
+        return []
+
+
+def _llm_filter_industry(items: list[dict], keywords: str) -> list[dict]:
+    """用 qwen-plus 判断每条热点是否与画像行业关键词相关，返回相关条目。"""
+    api_key = _read_env().get('DASHSCOPE_API_KEY', '').strip()
+    if not api_key or not items or not keywords:
+        return items  # 无 LLM 或无关键词 → 不过滤
+    titles = [it.get('title', '') for it in items[:40]]
+    prompt = (
+        f"你是内容选题助手。下面是热搜标题列表，请判断每条是否与以下行业关键词相关：\n"
+        f"关键词：{keywords}\n\n"
+        f"热搜标题（JSON 数组）：\n{json.dumps(titles, ensure_ascii=False)}\n\n"
+        f"请返回一个 JSON 对象 {{\"related\": [相关标题的索引列表]}}，"
+        f"索引从 0 开始。只要与关键词有部分关联就算相关。"
+    )
+    payload = {
+        'model': 'qwen-plus',
+        'messages': [{'role': 'user', 'content': prompt}],
+        'temperature': 0.3,
+        'response_format': {'type': 'json_object'},
+    }
+    try:
+        req = urllib.request.Request(
+            'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+            data=json.dumps(payload).encode('utf-8'),
+            headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+            method='POST',
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode('utf-8'))
+        content = result['choices'][0]['message']['content']
+        parsed = json.loads(content)
+        related_indices = set(parsed.get('related', []))
+        return [items[i] for i in related_indices if i < len(items)]
+    except Exception:
+        return items  # LLM 失败 → 不过滤
+
+
+def _load_persona_keywords(persona: str) -> str:
+    """从画像的 benchmarks.md 读取行业关键词；无则从 audience.md 兴趣标签提取。"""
+    if not persona:
+        return ''
+    bm = PROFILES_DIR / persona / 'benchmarks.md'
+    if bm.is_file():
+        text = bm.read_text(encoding='utf-8')
+        for line in text.splitlines():
+            if '行业关键词' in line or '关键词' in line:
+                continue
+            if line.strip() and not line.startswith('#') and not line.startswith('<!--'):
+                return line.strip()
+    aud = PROFILES_DIR / persona / 'audience.md'
+    if aud.is_file():
+        text = aud.read_text(encoding='utf-8')
+        for line in text.splitlines():
+            if '兴趣标签' in line:
+                continue
+            if line.strip() and not line.startswith('#') and not line.startswith('<!--'):
+                return line.strip()
+    return ''
+
+
+@app.get("/api/trends/industry")
+async def api_trends_industry(persona: str = '', sources: str = 'ai-news,it-news,60s', limit: int = 20):
+    """行业热点：拉取行业新闻源 + 用画像关键词过滤通用热搜。"""
+    keys = [s.strip() for s in sources.split(',') if s.strip() in INDUSTRY_SOURCES]
+    now = time.time()
+    loop = asyncio.get_event_loop()
+    industry_items: list[dict] = []
+    for k in keys:
+        c = _INDUSTRY_CACHE.get(k)
+        if c and now - c[0] < 300:
+            industry_items.extend(c[1])
+        else:
+            items = await loop.run_in_executor(None, _fetch_industry_source, k)
+            if items:
+                _INDUSTRY_CACHE[k] = (now, items)
+                industry_items.extend(items)
+            elif c:
+                industry_items.extend(c[1])
+    # 去重（按标题）
+    seen = set()
+    deduped = []
+    for it in industry_items:
+        t = it.get('title', '')
+        if t and t not in seen:
+            seen.add(t)
+            deduped.append(it)
+    # 用画像关键词过滤
+    keywords = _load_persona_keywords(persona)
+    if keywords and deduped:
+        deduped = await loop.run_in_executor(None, _llm_filter_industry, deduped, keywords)
+    return {"industry": deduped[:max(1, min(limit, 50))], "keywords": keywords, "updated": int(now)}
+
+
+# ── 对标账号监控 ──────────────────────────────────────────────────────
+BENCHMARKS_DIR = OUTPUTS_DIR / "_benchmarks"
+
+
+def _benchmarks_config_path(persona: str) -> Path:
+    return BENCHMARKS_DIR / persona / "config.json"
+
+
+def _load_benchmarks_config(persona: str) -> dict:
+    f = _benchmarks_config_path(persona)
+    if f.is_file():
+        try:
+            return json.loads(f.read_text(encoding='utf-8'))
+        except Exception:
+            pass
+    return {"accounts": [], "keywords": ""}
+
+
+def _save_benchmarks_config(persona: str, config: dict) -> None:
+    f = _benchmarks_config_path(persona)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding='utf-8')
+
+
+class BenchmarkConfigRequest(BaseModel):
+    persona: str
+    accounts: list[dict] = []   # [{platform, name, url}]
+    keywords: str = ''
+
+
+@app.get("/api/benchmarks")
+async def api_benchmarks_get(persona: str):
+    """获取对标账号配置。"""
+    if not persona:
+        raise HTTPException(400, 'persona 不能为空')
+    return _load_benchmarks_config(persona)
+
+
+@app.post("/api/benchmarks")
+async def api_benchmarks_save(req: BenchmarkConfigRequest):
+    """保存对标账号配置。"""
+    if not req.persona:
+        raise HTTPException(400, 'persona 不能为空')
+    _save_benchmarks_config(req.persona, {"accounts": req.accounts, "keywords": req.keywords})
+    return {"saved": True}
+
+
+@app.get("/api/benchmarks/posts")
+async def api_benchmarks_posts(persona: str):
+    """获取已抓取的对标账号帖子。"""
+    if not persona:
+        raise HTTPException(400, 'persona 不能为空')
+    bd = BENCHMARKS_DIR / persona
+    if not bd.is_dir():
+        return {"groups": [], "last_fetch": 0}
+    groups = []
+    for account_dir in sorted(bd.iterdir()):
+        if not account_dir.is_dir() or account_dir.name.startswith('_'):
+            continue
+        posts_file = account_dir / "posts.json"
+        if not posts_file.is_file():
+            continue
+        try:
+            posts = json.loads(posts_file.read_text(encoding='utf-8'))
+        except Exception:
+            posts = []
+        meta_file = account_dir / "meta.json"
+        meta = {}
+        if meta_file.is_file():
+            try:
+                meta = json.loads(meta_file.read_text(encoding='utf-8'))
+            except Exception:
+                pass
+        groups.append({
+            "platform": meta.get("platform", ""),
+            "account": meta.get("name", account_dir.name),
+            "url": meta.get("url", ""),
+            "posts": posts[:20],
+        })
+    lf = bd / "last_fetch.json"
+    last_fetch = 0
+    if lf.is_file():
+        try:
+            last_fetch = json.loads(lf.read_text(encoding='utf-8')).get("ts", 0)
+        except Exception:
+            pass
+    return {"groups": groups, "last_fetch": last_fetch}
+
+
+@app.post("/api/benchmarks/refresh")
+async def api_benchmarks_refresh(persona: str):
+    """手动触发对标账号抓取（异步）。"""
+    if not persona:
+        raise HTTPException(400, 'persona 不能为空')
+    config = _load_benchmarks_config(persona)
+    accounts = config.get("accounts", [])
+    if not accounts:
+        raise HTTPException(400, '未配置对标账号')
+    _write_benchmark_status(persona, 'running', f'正在抓取 {len(accounts)} 个对标账号…')
+
+    def _fetch_all() -> None:
+        try:
+            import subprocess
+            script = PROJECT_ROOT / "skills" / "shared" / "scripts" / "benchmark_fetch.py"
+            for acc in accounts:
+                platform = acc.get("platform", "")
+                name = acc.get("name", "")
+                url = acc.get("url", "")
+                if not platform or not name:
+                    continue
+                try:
+                    subprocess.run(
+                        [sys.executable, str(script), "fetch",
+                         "--persona", persona,
+                         "--platform", platform,
+                         "--name", name,
+                         "--url", url or ''],
+                        capture_output=True, timeout=60,
+                        cwd=str(PROJECT_ROOT),
+                    )
+                except Exception:
+                    continue
+            (BENCHMARKS_DIR / persona / "last_fetch.json").write_text(
+                json.dumps({"ts": int(time.time())}), encoding='utf-8')
+            _write_benchmark_status(persona, 'done', f'抓取完成，共 {len(accounts)} 个账号')
+        except Exception as e:
+            _write_benchmark_status(persona, 'failed', f'抓取失败：{e}')
+
+    threading.Thread(target=_fetch_all, daemon=True).start()
+    return {"started": True, "accounts": len(accounts)}
+
+
+def _write_benchmark_status(persona: str, state: str, log: str = '') -> None:
+    try:
+        BENCHMARKS_DIR.mkdir(parents=True, exist_ok=True)
+        f = BENCHMARKS_DIR / persona / "_status.json"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps({"state": state, "log": log, "ts": int(time.time())},
+                                ensure_ascii=False), encoding='utf-8')
+    except Exception:
+        pass
+
+
+@app.get("/api/benchmarks/status")
+async def api_benchmarks_status(persona: str):
+    """查对标抓取进度。"""
+    f = BENCHMARKS_DIR / persona / "_status.json"
+    if f.is_file():
+        try:
+            return json.loads(f.read_text(encoding='utf-8'))
+        except Exception:
+            pass
+    return {"state": "unknown", "log": ""}
+
+
 SCHEDULE_FILE = OUTPUTS_DIR / "_schedule.json"
 SCHEDULE_STATUSES = {"idea", "draft", "scheduled", "published"}
 SCHEDULE_KINDS = {"content", "event"}

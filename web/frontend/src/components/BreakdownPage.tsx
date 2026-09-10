@@ -1,17 +1,23 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { runAgent, createIdea } from '../lib/api';
 import { renderMarkdown } from '../lib/sanitize';
 import { IconFire, IconIdea, IconSkills } from './icons';
 
 interface BreakdownPageProps {
   persona: string;
+  prefillContent?: string;   // 从对标动态等页面跳转时预填的内容
 }
 
-export default function BreakdownPage({ persona }: BreakdownPageProps) {
+export default function BreakdownPage({ persona, prefillContent }: BreakdownPageProps) {
   const [input, setInput] = useState('');
   const [result, setResult] = useState('');
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState('');
+
+  // 从外部跳转时预填内容
+  useEffect(() => {
+    if (prefillContent) setInput(prefillContent);
+  }, [prefillContent]);
 
   const run = async () => {
     if (!input.trim()) return;

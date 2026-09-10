@@ -183,6 +183,36 @@ export function fetchTrends(platforms: string, limit = 12): Promise<{ trends: Tr
   return request(`/api/trends?platforms=${encodeURIComponent(platforms)}&limit=${limit}`);
 }
 
+// ---- 行业热点（画像驱动）----
+export function fetchIndustryTrends(persona: string, limit = 20): Promise<{ industry: TrendItem[]; keywords: string; updated: number }> {
+  return request(`/api/trends/industry?persona=${encodeURIComponent(persona)}&limit=${limit}`);
+}
+
+// ---- 对标账号监控 ----
+export interface BenchmarkAccount { platform: string; name: string; url: string; }
+export interface BenchmarkConfig { accounts: BenchmarkAccount[]; keywords: string; }
+export interface BenchmarkPost { title: string; url: string; hot: string; snippet: string; }
+export interface BenchmarkGroup { platform: string; account: string; url: string; posts: BenchmarkPost[]; }
+export function fetchBenchmarks(persona: string): Promise<BenchmarkConfig> {
+  return request(`/api/benchmarks?persona=${encodeURIComponent(persona)}`);
+}
+export function saveBenchmarks(persona: string, accounts: BenchmarkAccount[], keywords: string): Promise<{ saved: boolean }> {
+  return request('/api/benchmarks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ persona, accounts, keywords }),
+  });
+}
+export function fetchBenchmarkPosts(persona: string): Promise<{ groups: BenchmarkGroup[]; last_fetch: number }> {
+  return request(`/api/benchmarks/posts?persona=${encodeURIComponent(persona)}`);
+}
+export function refreshBenchmarks(persona: string): Promise<{ started: boolean; accounts: number }> {
+  return request(`/api/benchmarks/refresh?persona=${encodeURIComponent(persona)}`, { method: 'POST' });
+}
+export function fetchBenchmarkStatus(persona: string): Promise<{ state: string; log: string }> {
+  return request(`/api/benchmarks/status?persona=${encodeURIComponent(persona)}`);
+}
+
 // ---- 内容排期 ----
 export interface ScheduleItem {
   id: string; title: string; date: string; platform: string;

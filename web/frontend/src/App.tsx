@@ -90,6 +90,7 @@ export default function App() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [gatewayStatus, setGatewayStatus] = useState('connecting');
   const [showRecommend, setShowRecommend] = useState(false);
+  const [breakdownPrefill, setBreakdownPrefill] = useState('');
   const [showWizard, setShowWizard] = useState(false);
   const [showWelcome, setShowWelcome] = useState(() => shouldShowWelcome());
 
@@ -436,6 +437,12 @@ export default function App() {
     sendUserAndStream(ns.id, prompt);
   }, [selectedPersona, sendUserAndStream]);
 
+  // 对标内容「一键拆解」：跳到爆款拆解页，预填内容
+  const handleBreakdown = useCallback((content: string) => {
+    setBreakdownPrefill(content);
+    setCurrentPage('breakdown');
+  }, []);
+
   const handleStopStream = useCallback((sessionId: string) => {
     streamCtl.current[sessionId]?.abort();
     // 告诉后端**真正终止**这一轮 agent 并释放会话锁——否则后端进程还在跑、占着锁，下一句会被拦
@@ -615,7 +622,7 @@ export default function App() {
           />
         ) : null;
       case 'trends':
-        return <TrendsPage onUseTopic={handleUseTopic} />;
+        return <TrendsPage onUseTopic={handleUseTopic} persona={selectedPersona} onNavigate={setCurrentPage} onBreakdown={handleBreakdown} />;
       case 'ideas':
         return <IdeasPage onUseTopic={handleUseTopic} />;
       case 'calendar':
@@ -623,7 +630,7 @@ export default function App() {
       case 'publish':
         return <PublishPage persona={selectedPersona} />;
       case 'breakdown':
-        return <BreakdownPage persona={selectedPersona} />;
+        return <BreakdownPage persona={selectedPersona} prefillContent={breakdownPrefill} />;
       case 'usecases':
         return <UseCasesPage onNavigate={setCurrentPage} />;
       case 'voices':
