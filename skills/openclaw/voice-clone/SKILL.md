@@ -9,8 +9,8 @@ layer: produce
 > 用本人语音样本克隆音色，再合成任意文案。走云端 provider（用户自备 key），本地无需 GPU。
 > 全部走 `skills/shared/scripts/voice_clone.py`。
 
-> 不想克隆、用现成公共音色见 **tts-voiceover**（edge-tts，免费无需 key）；
-> AI 生成音乐/BGM 见 **ai-music**；合成后与 BGM 混音见 **audio-mix**。
+> 不想克隆、使用现成系统音色时，从 Easel `/api/voices` 查询并在 **tts-voiceover** 中使用页面确认的闭源音色；禁止使用 edge-tts。
+> 用户明确要求原创 AI 音乐并确认费用时才用 **ai-music**；普通 BGM 从曲库选择。
 
 ## 前置：配置 API key
 

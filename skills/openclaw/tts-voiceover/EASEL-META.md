@@ -5,9 +5,9 @@
 | **SKILL 名称** | tts-voiceover |
 | **所属层** | produce |
 | **来源类型** | 自研 |
-| **原始来源** | Easel 自研；封装共享脚本 `skills/shared/scripts/tts.py`，通过 subprocess 调 edge-tts + ffmpeg |
-| **参考项目** | edge-tts — https://github.com/rany2/edge-tts（微软 Edge 在线 TTS 的 Python 封装，提供音色列表 / rate / volume / pitch / SRT 字幕）；FFmpeg — https://ffmpeg.org（wav/m4a 转码、时长探测） |
-| **许可** | 待核实（edge-tts: GPL-3.0；FFmpeg: LGPL/GPL；TTS 服务为微软 Edge 在线接口） |
+| **原始来源** | Easel 自研；封装 `tts.py` 与 `voice_clone.py`，调用页面配置的 CosyVoice / Qwen-TTS 闭源音色并用 FFmpeg 拼接、探测时长 |
+| **参考项目** | 阿里云百炼 CosyVoice / Qwen-TTS；FFmpeg（音频拼接、转码、时长探测） |
+| **许可** | 本实现自研；云 TTS 服务遵循对应供应商条款；FFmpeg 为 LGPL/GPL |
 
 > 整理时间: 2026-07-23
 > 用途: 来源溯源与致谢

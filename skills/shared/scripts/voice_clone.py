@@ -360,6 +360,54 @@ def clone_dashscope(a, out: Path) -> Path:
     return out
 
 
+def clone_qwen_tts(a, out: Path) -> Path:
+    """Qwen-TTS 合成（千问 3-TTS，效果更自然）。
+
+    API: /api/v1/services/aigc/multimodal-generation/generation
+    模型: qwen3-tts-flash（非实时）/ qwen3-tts-instruct-flash（带指令控制）
+    返回: output.audio.url（WAV 格式，需转码为 mp3）
+    """
+    key = require_env("DASHSCOPE_API_KEY")
+    base = (os.environ.get("DASHSCOPE_BASE_URL", "").strip()
+            or "https://dashscope.aliyuncs.com").rstrip("/")
+    # Instruct 模型支持 instructions 指令控制情感/语速
+    instr = instruct_text(getattr(a, "emotion", None))
+    model = a.model or os.environ.get("QWEN_TTS_MODEL", "").strip()
+    if not model:
+        model = "qwen3-tts-instruct-flash" if instr else "qwen3-tts-flash"
+    if not a.voice_id:
+        fail("qwen-tts 合成需 --voice-id（系统音色名如 Cherry/Serena）。")
+    inp: dict[str, Any] = {"text": a.text, "voice": a.voice_id, "language_type": "Chinese"}
+    payload: dict[str, Any] = {"model": model, "input": inp}
+    if instr:
+        inp["instructions"] = instr
+        inp["optimize_instructions"] = True
+    resp = http_json(f"{base}/api/v1/services/aigc/multimodal-generation/generation",
+                     {"Authorization": f"Bearer {key}"}, payload)
+    url = _find_url(resp)
+    if not url:
+        fail(f"Qwen-TTS 合成未返回音频 URL：{json.dumps(resp, ensure_ascii=False)[:300]}")
+    # Qwen-TTS 返回 WAV，需转码为目标格式
+    fmt = out.suffix.lstrip(".").lower() or "mp3"
+    if fmt == "wav":
+        return download(url, out)
+    # 非 wav：先下载 WAV 再用 ffmpeg 转码
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp_wav = Path(tmp.name)
+    try:
+        download(url, tmp_wav)
+        import subprocess as _sp
+        r = _sp.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                     "-i", str(tmp_wav), "-c:a", "libmp3lame", "-b:a", "128k", str(out)],
+                    capture_output=True, text=True, timeout=30)
+        if r.returncode != 0 or not out.is_file():
+            fail(f"Qwen-TTS WAV→{fmt} 转码失败：{r.stderr.strip()[:200]}")
+    finally:
+        tmp_wav.unlink(missing_ok=True)
+    return out
+
+
 def clone_fish(a, out: Path) -> Path:
     key = require_env("FISH_API_KEY")
     base = (os.environ.get("FISH_BASE_URL", "").strip() or "https://api.fish.audio").rstrip("/")
@@ -523,6 +571,7 @@ def cmd_clone(a) -> int:
         fail("--text 待合成文案必填。")
     out = Path(a.output).expanduser().resolve()
     dispatch = {"minimax": clone_minimax, "dashscope": clone_dashscope,
+                "qwen-tts": clone_qwen_tts,
                 "fish-audio": clone_fish, "openai-compatible": clone_openai,
                 "gemini": clone_gemini}
     result = dispatch[provider](a, out)
