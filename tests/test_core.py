@@ -10,6 +10,7 @@ import asyncio
 import io
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,6 +24,7 @@ from easel import persona  # noqa: E402
 import app as web  # noqa: E402
 import paper_ingest  # noqa: E402
 import render_slides  # noqa: E402
+import tts  # noqa: E402
 from model_registry import (configured_providers, env_aliases, provider_ids,
                             provider_required_env)  # noqa: E402
 from persona_gate import classify as classify_persona_score  # noqa: E402
@@ -60,6 +62,30 @@ def test_configured_media_providers_lists_choices_without_keys():
     serialized = json.dumps(providers)
     assert "secret-agnes" not in serialized and "secret-openai" not in serialized
     assert "agnes-video-2.5-flash" in serialized and "video-model-b" in serialized
+
+
+def test_closed_tts_prefers_explicit_page_voice(monkeypatch):
+    monkeypatch.setenv("VOICE_NARRATOR_VOICE_ID", "environment-default")
+    assert tts._closed_voice_id("cosyvoice-v2-easel-custom") == "cosyvoice-v2-easel-custom"
+    assert tts._closed_voice_id("longxiaochun_v2") == "longxiaochun_v2"
+
+
+def test_closed_tts_detects_edge_voice():
+    assert tts._is_edge_voice("zh-CN-YunyangNeural") is True
+    assert tts._is_edge_voice("cosyvoice-v2-easel-custom") is False
+
+
+def test_auto_tts_never_falls_back_to_edge(monkeypatch, tmp_path):
+    args = SimpleNamespace(
+        output=str(tmp_path / "voice.mp3"), format="mp3", subtitle=None,
+        engine="auto", voice="page-default", rate=None, volume=None,
+        pitch=None, proxy=None,
+    )
+    monkeypatch.setattr(tts, "_read_text", lambda _: "测试")
+    monkeypatch.setattr(tts, "_closed_provider", lambda: "dashscope")
+    monkeypatch.setattr(tts, "_run_closed", lambda *args: (_ for _ in ()).throw(tts.ClosedTTSError("failed")))
+    with pytest.raises(SystemExit):
+        tts.cmd_speak(args)
 
 
 # ---- CLI: _resolve_input ----
@@ -373,14 +399,14 @@ def test_publish_job_route_does_not_match_native_platform_route():
     assert route.endpoint is web.api_create_publish_job
 
 
-def test_video_bgm_only_uses_matching_tagged_track(tmp_path, monkeypatch):
+def test_video_bgm_uses_library_for_matching_and_generic_content(tmp_path, monkeypatch):
     track = tmp_path / "promo.mp3"
     track.write_bytes(b"audio")
     monkeypatch.setattr(web, "_bgm_tracks", lambda: [track])
     monkeypatch.setattr(web, "_bgm_meta", lambda: {"promo.mp3": {"style": "ecom"}})
 
     assert web._video_bgm("商品上新优惠", "限时促销") == track
-    assert web._video_bgm("一篇普通文章", "没有匹配的内容类型") is None
+    assert web._video_bgm("一篇普通文章", "没有匹配的内容类型") == track
 
 
 def test_video_bgm_falls_back_to_related_style(tmp_path, monkeypatch):
@@ -391,6 +417,59 @@ def test_video_bgm_falls_back_to_related_style(tmp_path, monkeypatch):
     # 曲库只有 corporate，但内容是科技/AI → 应回退到 corporate
     monkeypatch.setattr(web, "_bgm_meta", lambda: {"corp.mp3": {"style": "corporate"}})
     assert web._video_bgm("GPT-6发布，AI时代来了", "人工智能") == corp
+
+
+def test_video_fingerprint_changes_with_voice_bgm_and_digital_human(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "OUTPUTS_DIR", tmp_path)
+    monkeypatch.setattr(web, "LOCAL_OUTPUTS_DIR", tmp_path)
+    image = tmp_path / "card.png"
+    image.write_bytes(b"image")
+    bgm = tmp_path / "bgm.mp3"
+    bgm.write_bytes(b"audio")
+    base = web.PublishJobRequest(title="标题", body="正文", media=[])
+    first = web._video_generation_fingerprint(base, [image], "voice-a", "cosyvoice", bgm)
+    changed_voice = web._video_generation_fingerprint(base, [image], "voice-b", "cosyvoice", bgm)
+    with_dh = web.PublishJobRequest(title="标题", body="正文", media=[], digital_human="role-a")
+    changed_dh = web._video_generation_fingerprint(with_dh, [image], "voice-a", "cosyvoice", bgm)
+    assert len({first, changed_voice, changed_dh}) == 3
+
+
+def test_tts_parser_rejects_edge_engine():
+    with pytest.raises(SystemExit):
+        tts.build_parser().parse_args([
+            "speak", "--text", "测试", "--output", "voice.mp3",
+            "--voice", "page-default", "--engine", "edge",
+        ])
+
+
+def test_voice_engine_uses_voice_provider(monkeypatch):
+    monkeypatch.setattr(web, "_voices_meta", lambda: {"cloned-voice": {}})
+    assert web._voice_engine("Cherry") == "qwen-tts"
+    assert web._voice_engine("longxiaochun_v2") == "cosyvoice"
+    assert web._voice_engine("cloned-voice") == "cosyvoice"
+    assert web._voice_engine("missing") is None
+
+
+def test_publish_job_rejects_invalid_digital_human_position():
+    with pytest.raises(ValueError):
+        web.PublishJobRequest(digital_human_pos="center")
+
+
+def test_emo_tasks_persist_across_reload(tmp_path, monkeypatch):
+    task_file = tmp_path / "digital-human" / "tasks.json"
+    monkeypatch.setattr(web, "EMO_TASKS_FILE", task_file)
+    tasks = {"task-a": {"task_id": "remote-a", "status": "PENDING"}}
+    web._emo_tasks_save(tasks)
+    assert web._emo_tasks_load() == tasks
+
+
+def test_video_generation_requires_confirmation(tmp_path, monkeypatch):
+    image = tmp_path / "card.png"
+    image.write_bytes(b"image")
+    monkeypatch.setattr(web, "_publish_media", lambda _: ([image], []))
+    result = web._generate_publish_video("job", web.PublishJobRequest())
+    assert result["verified"] is False
+    assert "尚未确认" in result["message"]
 
 
 def test_split_captions_distributes_sentences():
