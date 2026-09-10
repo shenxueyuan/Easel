@@ -6,9 +6,10 @@ import {
   fetchDhCharacters, createDhCharacter, deleteDhCharacter,
 } from '../lib/api';
 import type { VoiceItem, DhCharacter } from '../lib/api';
-import { IconMic, IconVideo, IconTrash, IconRefresh } from './icons';
+import { IconMic, IconVideo, IconMusic, IconTrash, IconRefresh } from './icons';
+import BgmPage from './BgmPage';
 
-type Tab = 'voices' | 'digital-human';
+type Tab = 'voices' | 'digital-human' | 'bgm';
 type TtsEngine = 'cosyvoice' | 'qwen-tts';
 
 export default function VoicePage() {
@@ -305,6 +306,11 @@ export default function VoicePage() {
           style={{ borderRadius: '6px 6px 0 0', borderBottom: tab === 'digital-human' ? '2px solid var(--accent)' : 'none' }}
           onClick={() => setTab('digital-human')}>
           <IconVideo size={14} /> 数字人管理
+        </button>
+        <button className={`btn btn-sm ${tab === 'bgm' ? 'btn-primary' : 'btn-ghost'}`}
+          style={{ borderRadius: '6px 6px 0 0', borderBottom: tab === 'bgm' ? '2px solid var(--accent)' : 'none' }}
+          onClick={() => setTab('bgm')}>
+          <IconMusic size={14} /> BGM 曲库
         </button>
       </div>
 
@@ -710,6 +716,9 @@ export default function VoicePage() {
           </div>
         </>
       )}
+
+      {/* ── BGM 曲库 Tab ── */}
+      {tab === 'bgm' && <BgmPage />}
     </div>
   );
 }

@@ -10,7 +10,7 @@ import type {
 import type { Page } from './Sidebar';
 import {
   IconFire, IconCalendar, IconOutputs, IconChat, IconSkills, IconAccounts,
-  IconIdea, IconPublish,
+  IconIdea, IconPublish, IconBook,
 } from './icons';
 
 /** 大数格式化：12000 → 1.2万。 */
@@ -93,6 +93,7 @@ export default function DashboardPage({ persona, gatewayStatus, onNavigate, onUs
     { label: '记选题', page: 'ideas', Icon: IconIdea },
     { label: '排日历', page: 'calendar', Icon: IconCalendar },
     { label: '去发布', page: 'publish', Icon: IconPublish },
+    { label: '使用指南', page: 'usecases', Icon: IconBook },
   ];
 
   const stats: { label: string; value: string; page: Page; Icon: typeof IconChat }[] = [

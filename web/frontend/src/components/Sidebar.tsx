@@ -5,10 +5,10 @@ import type { ComponentType } from 'react';
 import {
   IconChat, IconSkills, IconOutputs, IconAccounts, IconProfile,
   IconNewChat, IconEdit, IconArchive, IconUnarchive, IconTrash, IconChevron,
-  IconDashboard, IconBook, IconMusic, IconMic,
+  IconDashboard, IconMic,
 } from './icons';
 
-export type Page = 'dashboard' | 'chat' | 'usecases' | 'trends' | 'ideas' | 'calendar' | 'publish' | 'breakdown' | 'skills' | 'outputs' | 'bgm' | 'voices' | 'accounts' | 'profile';
+export type Page = 'dashboard' | 'chat' | 'usecases' | 'trends' | 'ideas' | 'calendar' | 'publish' | 'breakdown' | 'skills' | 'outputs' | 'voices' | 'accounts' | 'profile';
 
 interface SidebarProps {
   currentPage: Page;
@@ -32,10 +32,8 @@ interface SidebarProps {
 const NAV: { page: Page; Icon: ComponentType<{ size?: number }>; label: string }[] = [
   { page: 'dashboard', Icon: IconDashboard, label: '工作台' },
   { page: 'chat', Icon: IconChat, label: '对话' },
-  { page: 'usecases', Icon: IconBook, label: '使用场景' },
   { page: 'skills', Icon: IconSkills, label: '技能库' },
   { page: 'outputs', Icon: IconOutputs, label: '内容库' },
-  { page: 'bgm', Icon: IconMusic, label: 'BGM 曲库' },
   { page: 'voices', Icon: IconMic, label: '配音 & 数字人' },
   { page: 'accounts', Icon: IconAccounts, label: '账号' },
   { page: 'profile', Icon: IconProfile, label: '画像' },

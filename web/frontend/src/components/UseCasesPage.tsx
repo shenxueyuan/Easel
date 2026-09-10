@@ -609,7 +609,7 @@ export default function UseCasesPage({ onNavigate }: UseCasesPageProps) {
     <div className="page-scroll usecases-page">
       {/* Hero */}
       <div className="usecases-hero">
-        <h1 className="page-title">使用场景指南</h1>
+        <h1 className="page-title">使用指南</h1>
         <p className="page-subtitle">
           {USE_CASES.length} 大场景 · {totalScenarios} 个具体用法 · 113 个 Skill
           <br />
@@ -674,7 +674,7 @@ export default function UseCasesPage({ onNavigate }: UseCasesPageProps) {
 
       {/* 使用场景列表 */}
       <div className="usecases-list">
-        <h2 className="usecases-section-title">使用场景</h2>
+        <h2 className="usecases-section-title">场景列表</h2>
         {filteredCases.length === 0 && (
           <div className="usecases-empty">没有找到匹配的场景，换个关键词试试？</div>
         )}

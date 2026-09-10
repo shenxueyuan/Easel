@@ -77,7 +77,7 @@ export default function BgmPage() {
   };
 
   return (
-    <div className="page-scroll" style={{ padding: '24px 28px' }}>
+    <div style={{ paddingTop: 4 }}>
       {/* 页头 */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>

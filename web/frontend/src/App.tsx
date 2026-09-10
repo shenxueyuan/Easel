@@ -13,7 +13,6 @@ import IdeasPage from './components/IdeasPage';
 import PublishPage from './components/PublishPage';
 import BreakdownPage from './components/BreakdownPage';
 import UseCasesPage from './components/UseCasesPage';
-import BgmPage from './components/BgmPage';
 import VoicePage from './components/VoicePage';
 import SubNav from './components/SubNav';
 import OnboardingWizard from './components/OnboardingWizard';
@@ -35,11 +34,11 @@ import type { ChatSession, ChatMessage, StreamState } from './lib/store';
 const ONBOARDING_SEEN_KEY = 'easel_onboarding_seen';
 const ACTIVE_PAGE_KEY = 'easel_active_page';
 const OPEN_PAGES_KEY = 'easel_open_pages';
-const PAGE_VALUES: Page[] = ['dashboard', 'chat', 'usecases', 'trends', 'ideas', 'calendar', 'publish', 'breakdown', 'skills', 'outputs', 'bgm', 'voices', 'accounts', 'profile'];
+const PAGE_VALUES: Page[] = ['dashboard', 'chat', 'usecases', 'trends', 'ideas', 'calendar', 'publish', 'breakdown', 'skills', 'outputs', 'voices', 'accounts', 'profile'];
 const PAGE_LABELS: Record<Page, string> = {
-  dashboard: '工作台', chat: '对话', usecases: '使用场景', trends: '热点雷达', ideas: '选题库',
+  dashboard: '工作台', chat: '对话', usecases: '使用指南', trends: '热点雷达', ideas: '选题库',
   calendar: '内容日历', publish: '发布中心', breakdown: '爆款拆解', skills: '技能库',
-  outputs: '内容库', bgm: 'BGM 曲库', voices: '配音 & 数字人', accounts: '账号', profile: '画像',
+  outputs: '内容库', voices: '配音 & 数字人', accounts: '账号', profile: '画像',
 };
 
 function storedPage(): Page {
@@ -627,8 +626,6 @@ export default function App() {
         return <BreakdownPage persona={selectedPersona} />;
       case 'usecases':
         return <UseCasesPage onNavigate={setCurrentPage} />;
-      case 'bgm':
-        return <BgmPage />;
       case 'voices':
         return <VoicePage />;
       case 'skills':

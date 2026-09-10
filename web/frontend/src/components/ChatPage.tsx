@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
 import MessageBubble from './MessageBubble';
+import OutputPicker from './OutputPicker';
 import type { ChatSession, ChatMessage, StreamState } from '../lib/store';
 import { uploadFiles } from '../lib/api';
 import type { ThinkingMode, UploadedFile } from '../lib/api';
-import { IconArrowUp, IconStop, IconPlus, IconFile, IconPublish } from './icons';
+import { IconArrowUp, IconStop, IconPlus, IconFile, IconPublish, IconOutputs } from './icons';
 import type { Page } from './Sidebar';
 
 interface ChatPageProps {
@@ -43,6 +44,7 @@ export default function ChatPage({ session, stream, onSend, onStop, onResend, on
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [thinking, setThinking] = useState<ThinkingMode>(() => localStorage.getItem('easel_thinking_mode') === 'high' ? 'high' : 'off');
+  const [showPicker, setShowPicker] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -134,6 +136,10 @@ export default function ChatPage({ session, stream, onSend, onStop, onResend, on
             disabled={isStreaming || uploading} title="添加素材（图片/文档）">
             <IconPlus size={15} /> {uploading ? '上传中…' : '素材'}
           </button>
+          <button className="composer-attach-btn" onClick={() => setShowPicker(true)}
+            disabled={isStreaming} title="从内容库选择已有素材">
+            <IconOutputs size={15} /> 内容库
+          </button>
           <button
             className={`thinking-toggle ${thinking === 'high' ? 'active' : ''}`}
             onClick={() => {
@@ -210,6 +216,12 @@ export default function ChatPage({ session, stream, onSend, onStop, onResend, on
             ))}
           </div>
         </div>
+        {showPicker && (
+          <OutputPicker
+            onConfirm={(files) => { setAttachments((a) => [...a, ...files]); setShowPicker(false); }}
+            onClose={() => setShowPicker(false)}
+          />
+        )}
       </div>
     );
   }
@@ -274,6 +286,12 @@ export default function ChatPage({ session, stream, onSend, onStop, onResend, on
       <div className="chat-input-area">
         <div className="chat-input-inner">{inputBox(false)}</div>
       </div>
+      {showPicker && (
+        <OutputPicker
+          onConfirm={(files) => { setAttachments((a) => [...a, ...files]); setShowPicker(false); }}
+          onClose={() => setShowPicker(false)}
+        />
+      )}
     </div>
   );
 }
