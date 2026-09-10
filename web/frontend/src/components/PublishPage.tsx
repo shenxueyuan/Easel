@@ -5,8 +5,9 @@ import {
   checkWechatsync, wechatsyncPing, fetchWechatsyncPlatforms,
   createPublishJob, getPublishJob, listPublishJobs, cancelPublishJob, submitPublishSms,
   fetchVoices, cloneVoice, queryCloneStatus, deleteCloneVoice,
+  fetchDhCharacters, fetchBgmTracks,
 } from '../lib/api';
-import type { AccountItem, OutputFile, PublishJob, PublishJobTask, WechatsyncPlatform, VoiceItem } from '../lib/api';
+import type { AccountItem, OutputFile, PublishJob, PublishJobTask, WechatsyncPlatform, VoiceItem, DhCharacter, BgmTrack } from '../lib/api';
 import { loadPublishDraft, savePublishDraft } from '../lib/store';
 import { renderMarkdown } from '../lib/sanitize';
 import { IconPublish, IconCopy, IconCheck, IconCalendar, IconSkills, IconEdit, IconStop, IconTrash } from './icons';
@@ -95,7 +96,6 @@ export default function PublishPage({ persona }: PublishPageProps) {
   const [voices, setVoices] = useState<VoiceItem[]>([]);
   const [defaultVoice, setDefaultVoice] = useState('longxiaochun_v2');
   const [selectedVoice, setSelectedVoice] = useState('');
-  const [voiceLoading, setVoiceLoading] = useState(false);
   const [previewAudio, setPreviewAudio] = useState<HTMLAudioElement | null>(null);
   const [previewingVoice, setPreviewingVoice] = useState('');
   const [showCloneDialog, setShowCloneDialog] = useState(false);
@@ -103,8 +103,11 @@ export default function PublishPage({ persona }: PublishPageProps) {
   const [cloneFile, setCloneFile] = useState<File | null>(null);
   const [cloning, setCloning] = useState(false);
   const [cloneStatus, setCloneStatus] = useState('');
+  const [bgmTracks, setBgmTracks] = useState<BgmTrack[]>([]);
+  const [selectedBgm, setSelectedBgm] = useState('');
   const [digitalHuman, setDigitalHuman] = useState('');
   const [digitalHumanPos, setDigitalHumanPos] = useState('bottom-right');
+  const [dhCharacters, setDhCharacters] = useState<DhCharacter[]>([]);
   const [publishing, setPublishing] = useState(false);
 
   // 预检缓存：按内容指纹缓存，内容没变就不重复请求 AI
@@ -200,6 +203,8 @@ export default function PublishPage({ persona }: PublishPageProps) {
   useEffect(() => {
     fetchAccounts().then(setAccounts).catch(() => { /* 忽略 */ });
     fetchVoices().then((r) => { setVoices(r.voices); setDefaultVoice(r.default); if (!selectedVoice) setSelectedVoice(r.default); }).catch(() => { /* 忽略 */ });
+    fetchBgmTracks().then((r) => setBgmTracks(r.tracks)).catch(() => { /* 忽略 */ });
+    fetchDhCharacters().then((r) => setDhCharacters(r.characters)).catch(() => { /* 忽略 */ });
     checkWechatsync().then((s) => {
       setWsReady(s.ready);
       setExtConnected(s.extension_connected ?? null);
@@ -408,9 +413,14 @@ export default function PublishPage({ persona }: PublishPageProps) {
     const skipLine = skipReasons.length > 0
       ? `\n\n将跳过：${skipReasons.map((s) => `${s.label}（${s.reason}）`).join('、')}`
       : '';
+    const voiceLabel = voices.find((v) => v.voice_id === (selectedVoice || defaultVoice))?.name || selectedVoice || defaultVoice;
+    const bgmLabel = selectedBgm ? bgmTracks.find((t) => t.path === selectedBgm)?.name || selectedBgm : '从现有曲库自动匹配';
+    const dhLabel = digitalHuman ? dhCharacters.find((c) => c.id === digitalHuman)?.name || digitalHuman : '不使用';
+    const imageCount = selectedMedia.filter((path) => !VIDEO_RE.test(path)).length;
+    const generationSummary = `制作配置：\n- 脚本改写：qwen-plus，最多 1 次\n- TTS：${voiceLabel}，最多 ${imageCount * 4} 次短句合成\n- BGM：${bgmLabel}（不调用 AI 音乐）\n- 数字人：${dhLabel}${digitalHuman ? '（百炼 EMO，最多 1 次）' : ''}\n- AI 生图：0 次\n- 普通 I2V：0 次`;
     const okToSend = window.confirm(
       `发布前预检结果已显示在页面中。人设评分只做提醒，不会阻止发布。\n\n` +
-      `即将发布到：${publishLabels.join('、')}。\n` +
+      `${generationSummary}\n\n即将发布到：${publishLabels.join('、')}。\n` +
       `原生平台会直接发布，Wechatsync 平台逐个同步为草稿（需在各平台后台二次确认）。确定继续？${skipLine}`);
     if (!okToSend) return;
 
@@ -427,8 +437,10 @@ export default function PublishPage({ persona }: PublishPageProps) {
         native_platforms: canPublish.map((t) => t.key),
         wechatsync_platforms: wsTargets.map((t) => t.key),
         voice: selectedVoice || defaultVoice,
+        bgm: selectedBgm,
         digital_human: digitalHuman || '',
         digital_human_pos: digitalHumanPos,
+        generation_confirmed: true,
       });
       setActiveJob(job);
       syncJobToPub(job);
@@ -481,6 +493,9 @@ export default function PublishPage({ persona }: PublishPageProps) {
       const job = await createPublishJob({
         title, body, tags, media: selectedMedia, platform_contents: overrides,
         native_platforms: failedNative, wechatsync_platforms: failedWs,
+        voice: selectedVoice || defaultVoice, bgm: selectedBgm,
+        digital_human: digitalHuman, digital_human_pos: digitalHumanPos,
+        generation_confirmed: true,
       });
       setActiveJob(job);
       syncJobToPub(job);
@@ -502,6 +517,9 @@ export default function PublishPage({ persona }: PublishPageProps) {
         title, body, tags, media: selectedMedia, platform_contents: overrides,
         native_platforms: task.type === 'native' ? [task.platform] : [],
         wechatsync_platforms: task.type === 'wechatsync' ? [task.platform] : [],
+        voice: selectedVoice || defaultVoice, bgm: selectedBgm,
+        digital_human: digitalHuman, digital_human_pos: digitalHumanPos,
+        generation_confirmed: true,
       });
       setActiveJob(job);
       setJobHistory((items) => [job, ...items.filter((item) => item.id !== job.id)]);
@@ -741,16 +759,29 @@ export default function PublishPage({ persona }: PublishPageProps) {
           </div>
         )}
 
+        <label className="field-label" style={{ marginTop: 12 }}>
+          背景音乐
+          <span style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: 12 }}>（默认从曲库按内容匹配，不调用 AI 音乐模型）</span>
+        </label>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <select className="input" style={{ maxWidth: 320 }} value={selectedBgm} onChange={(e) => setSelectedBgm(e.target.value)}>
+            <option value="">自动匹配曲库</option>
+            {bgmTracks.map((track) => (
+              <option key={track.path} value={track.path}>{track.name}{track.style ? ` · ${track.style}` : ''}</option>
+            ))}
+          </select>
+        </div>
+
         {/* 数字人选项 */}
         <label className="field-label" style={{ marginTop: 12 }}>
           数字人形象
-          <span style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: 12 }}>（可选：选一张人像照片，生成视频时在右下角叠加说话的数字人）</span>
+          <span style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: 12 }}>（可选：选择数字人角色，生成视频时用口播音频驱动 EMO 并叠加到画面）</span>
         </label>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <select className="input" style={{ maxWidth: 260 }} value={digitalHuman} onChange={(e) => setDigitalHuman(e.target.value)}>
             <option value="">不使用数字人</option>
-            {mediaFiles.filter((f) => f.kind === 'image').slice(0, 30).map((f) => (
-              <option key={f.path} value={f.path}>{f.name}</option>
+            {dhCharacters.map((c) => (
+              <option key={c.id} value={c.id}>{c.name}</option>
             ))}
           </select>
           {digitalHuman && (
@@ -761,10 +792,18 @@ export default function PublishPage({ persona }: PublishPageProps) {
                 <option value="top-right">右上角</option>
                 <option value="top-left">左上角</option>
               </select>
-              <img src={mediaUrl(digitalHuman)} alt="数字人预览" style={{ width: 40, height: 40, borderRadius: 4, objectFit: 'cover' }} />
+              {(() => {
+                const c = dhCharacters.find((x) => x.id === digitalHuman);
+                return c ? <img src={c.image_url} alt={c.name} style={{ width: 40, height: 40, borderRadius: 4, objectFit: 'cover' }} /> : null;
+              })()}
             </>
           )}
         </div>
+        {dhCharacters.length === 0 && (
+          <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4 }}>
+            还没有数字人角色，请到「配音 & 数字人」页面创建
+          </div>
+        )}
 
         <div className="publish-actions">
           {adapting ? (

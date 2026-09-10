@@ -598,8 +598,11 @@ export function createPublishJob(data: {
   native_platforms: string[];
   wechatsync_platforms: string[];
   voice?: string;
+  bgm?: string;
   digital_human?: string;
   digital_human_pos?: string;
+  generation_confirmed?: boolean;
+  force_regenerate?: boolean;
 }): Promise<PublishJob> {
   return request<PublishJob>('/api/publish/jobs', {
     method: 'POST',
@@ -669,7 +672,7 @@ export interface VoiceItem {
   name: string;
   desc?: string;
   tags?: string;
-  type: 'system' | 'clone';
+  type: 'system' | 'clone' | 'qwen-tts';
   status?: string;
   preview_url?: string;
   // 官网完整字段（system 音色）
@@ -679,9 +682,11 @@ export interface VoiceItem {
   ssml?: string;
   instruct?: string;
   timestamp?: string;
+  // Qwen-TTS 音色字段
+  gender?: string;
 }
 
-export function fetchVoices(): Promise<{ voices: VoiceItem[]; default: string }> {
+export function fetchVoices(): Promise<{ voices: VoiceItem[]; default: string; engine?: string }> {
   return request('/api/voices');
 }
 
@@ -705,6 +710,14 @@ export function setDefaultVoice(voiceId: string): Promise<{ ok: boolean; default
   });
 }
 
+export function setTtsEngine(engine: 'cosyvoice' | 'qwen-tts'): Promise<{ ok: boolean; engine: string; default: string }> {
+  return request('/api/voices/engine', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ engine }),
+  });
+}
+
 export function queryCloneStatus(voiceId: string): Promise<{ voice_id: string; status: string; message?: string }> {
   return request(`/api/voices/clone/status/${encodeURIComponent(voiceId)}`);
 }
@@ -715,13 +728,51 @@ export function deleteCloneVoice(voiceId: string): Promise<{ ok: boolean }> {
 
 // ── 数字人（百炼 EMO）─────────────────────────────────────
 
+export interface DhCharacter {
+  id: string;
+  name: string;
+  desc: string;
+  image_path: string;
+  image_url: string;
+  created_at: string;
+}
+
+export function fetchDhCharacters(): Promise<{ characters: DhCharacter[] }> {
+  return request('/api/digital-human/characters');
+}
+
+export async function createDhCharacter(
+  name: string,
+  imageFile: File,
+  desc: string = '',
+): Promise<{ ok: boolean; id: string; name: string; image_path: string }> {
+  const fd = new FormData();
+  fd.append('name', name);
+  fd.append('desc', desc);
+  fd.append('image_file', imageFile);
+  const resp = await fetch('/api/digital-human/characters', { method: 'POST', body: fd });
+  const data = await resp.json();
+  if (!resp.ok || !data.id) {
+    throw new Error(data.detail || data.message || `创建失败 (HTTP ${resp.status})`);
+  }
+  return data;
+}
+
+export function deleteDhCharacter(id: string): Promise<{ ok: boolean }> {
+  return request(`/api/digital-human/characters/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
 export function generateDigitalHuman(
   imageFile: File | null,
   audioFile: File | null,
   pos: string,
+  styleLevel: string = 'normal',
+  characterId: string = '',
 ): Promise<{ ok: boolean; task_key: string; task_id: string; status: string }> {
   const fd = new FormData();
   fd.append('pos', pos);
+  fd.append('style_level', styleLevel);
+  if (characterId) fd.append('character_id', characterId);
   if (imageFile) fd.append('image_file', imageFile);
   if (audioFile) fd.append('audio_file', audioFile);
   return fetch('/api/digital-human/generate', { method: 'POST', body: fd }).then((r) => r.json());
