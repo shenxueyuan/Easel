@@ -6,6 +6,7 @@ import SkillPage from './components/SkillPage';
 import OutputsPage from './components/OutputsPage';
 import AccountsPage from './components/AccountsPage';
 import ProfilePage from './components/ProfilePage';
+import BenchmarkPage from './components/BenchmarkPage';
 import DashboardPage from './components/DashboardPage';
 import TrendsPage from './components/TrendsPage';
 import CalendarPage from './components/CalendarPage';
@@ -34,11 +35,11 @@ import type { ChatSession, ChatMessage, StreamState } from './lib/store';
 const ONBOARDING_SEEN_KEY = 'easel_onboarding_seen';
 const ACTIVE_PAGE_KEY = 'easel_active_page';
 const OPEN_PAGES_KEY = 'easel_open_pages';
-const PAGE_VALUES: Page[] = ['dashboard', 'chat', 'usecases', 'trends', 'ideas', 'calendar', 'publish', 'breakdown', 'skills', 'outputs', 'voices', 'accounts', 'profile'];
+const PAGE_VALUES: Page[] = ['dashboard', 'chat', 'usecases', 'trends', 'ideas', 'calendar', 'publish', 'breakdown', 'skills', 'outputs', 'voices', 'accounts', 'profile', 'benchmarks'];
 const PAGE_LABELS: Record<Page, string> = {
   dashboard: '工作台', chat: '对话', usecases: '使用指南', trends: '热点雷达', ideas: '选题库',
   calendar: '内容日历', publish: '发布中心', breakdown: '爆款拆解', skills: '技能库',
-  outputs: '内容库', voices: '配音 & 数字人', accounts: '账号', profile: '画像',
+  outputs: '内容库', voices: '配音 & 数字人', accounts: '账号', profile: '画像', benchmarks: '对标配置',
 };
 
 function storedPage(): Page {
@@ -643,6 +644,8 @@ export default function App() {
         return <AccountsPage />;
       case 'profile':
         return <ProfilePage persona={selectedPersona} onNewProfile={() => setShowWizard(true)} onDeleted={handleProfileDeleted} />;
+      case 'benchmarks':
+        return <BenchmarkPage persona={selectedPersona} onNavigate={setCurrentPage} onBreakdown={handleBreakdown} onUseTopic={handleUseTopic} />;
       default:
         return null;
     }

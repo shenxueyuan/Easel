@@ -189,10 +189,22 @@ export function fetchIndustryTrends(persona: string, limit = 20): Promise<{ indu
 }
 
 // ---- 对标账号监控 ----
-export interface BenchmarkAccount { platform: string; name: string; url: string; }
+export interface BenchmarkAccount { platform: string; name: string; rss_url: string; }
 export interface BenchmarkConfig { accounts: BenchmarkAccount[]; keywords: string; }
-export interface BenchmarkPost { title: string; url: string; hot: string; snippet: string; }
+export interface BenchmarkPost { title: string; url: string; hot: string; snippet: string; summary?: string; content?: string; published_at?: string; source?: string; confidence?: string; }
 export interface BenchmarkGroup { platform: string; account: string; url: string; posts: BenchmarkPost[]; }
+export interface RsshubConfig { rsshub_url: string; }
+
+export function fetchRsshubConfig(): Promise<RsshubConfig> {
+  return request('/api/rsshub/config');
+}
+export function saveRsshubConfig(rsshub_url: string): Promise<{ saved: boolean }> {
+  return request('/api/rsshub/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rsshub_url }),
+  });
+}
 export function fetchBenchmarks(persona: string): Promise<BenchmarkConfig> {
   return request(`/api/benchmarks?persona=${encodeURIComponent(persona)}`);
 }

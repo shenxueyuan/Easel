@@ -5,10 +5,10 @@ import type { ComponentType } from 'react';
 import {
   IconChat, IconSkills, IconOutputs, IconAccounts, IconProfile,
   IconNewChat, IconEdit, IconArchive, IconUnarchive, IconTrash, IconChevron,
-  IconDashboard, IconMic,
+  IconDashboard, IconMic, IconTarget,
 } from './icons';
 
-export type Page = 'dashboard' | 'chat' | 'usecases' | 'trends' | 'ideas' | 'calendar' | 'publish' | 'breakdown' | 'skills' | 'outputs' | 'voices' | 'accounts' | 'profile';
+export type Page = 'dashboard' | 'chat' | 'usecases' | 'trends' | 'ideas' | 'calendar' | 'publish' | 'breakdown' | 'skills' | 'outputs' | 'voices' | 'accounts' | 'profile' | 'benchmarks';
 
 interface SidebarProps {
   currentPage: Page;
@@ -36,6 +36,7 @@ const NAV: { page: Page; Icon: ComponentType<{ size?: number }>; label: string }
   { page: 'outputs', Icon: IconOutputs, label: '内容库' },
   { page: 'voices', Icon: IconMic, label: '配音 & 数字人' },
   { page: 'accounts', Icon: IconAccounts, label: '账号' },
+  { page: 'benchmarks', Icon: IconTarget, label: '对标配置' },
   { page: 'profile', Icon: IconProfile, label: '画像' },
 ];
 

@@ -281,7 +281,7 @@ function BenchmarksTab({ onUseTopic, persona, onNavigate, onBreakdown }: { onUse
           )}
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn btn-sm" onClick={() => onNavigate('profile')} title="配置对标账号">
+          <button className="btn btn-sm" onClick={() => onNavigate('benchmarks')} title="配置对标账号">
             <IconTarget size={14} /> 配置对标
           </button>
           <button className="btn btn-sm btn-primary" onClick={handleRefresh} disabled={refreshing || !persona}>
@@ -298,7 +298,7 @@ function BenchmarksTab({ onUseTopic, persona, onNavigate, onBreakdown }: { onUse
           <div className="empty-icon"><IconTarget size={40} /></div>
           <h3>未配置对标账号</h3>
           <p>在画像页配置对标账号后，这里会展示他们的最新内容。</p>
-          <button className="btn btn-primary" onClick={() => onNavigate('profile')}>
+          <button className="btn btn-primary" onClick={() => onNavigate('benchmarks')}>
             <IconPlus size={15} /> 去配置
           </button>
         </div>

@@ -5163,8 +5163,41 @@ def _save_benchmarks_config(persona: str, config: dict) -> None:
 
 class BenchmarkConfigRequest(BaseModel):
     persona: str
-    accounts: list[dict] = []   # [{platform, name, url}]
+    accounts: list[dict] = []   # [{platform, name, rss_url}]
     keywords: str = ''
+    rsshub_url: str = ''        # 全局 RSSHub 实例地址
+
+
+# 全局 RSSHub 配置文件
+def _rsshub_config_path() -> Path:
+    return OUTPUTS_DIR / "_rsshub.json"
+
+
+def _load_rsshub_config() -> dict:
+    f = _rsshub_config_path()
+    if f.is_file():
+        try:
+            return json.loads(f.read_text(encoding='utf-8'))
+        except Exception:
+            pass
+    return {"rsshub_url": os.environ.get("RSSHUB_URL", "http://localhost:1200")}
+
+
+def _save_rsshub_config(config: dict) -> None:
+    f = _rsshub_config_path()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding='utf-8')
+
+
+@app.get("/api/rsshub/config")
+async def api_rsshub_config_get():
+    return _load_rsshub_config()
+
+
+@app.post("/api/rsshub/config")
+async def api_rsshub_config_save(req: dict):
+    _save_rsshub_config(req)
+    return {"saved": True}
 
 
 @app.get("/api/benchmarks")
@@ -5241,11 +5274,13 @@ async def api_benchmarks_refresh(persona: str):
         try:
             import subprocess
             script = PROJECT_ROOT / "skills" / "shared" / "scripts" / "benchmark_fetch.py"
+            rsshub_cfg = _load_rsshub_config()
+            rsshub_url = rsshub_cfg.get("rsshub_url", "http://localhost:1200")
             for acc in accounts:
                 platform = acc.get("platform", "")
                 name = acc.get("name", "")
-                url = acc.get("url", "")
-                if not platform or not name:
+                rss_url = acc.get("rss_url", "") or acc.get("url", "")
+                if not platform or not name or not rss_url:
                     continue
                 try:
                     subprocess.run(
@@ -5253,7 +5288,8 @@ async def api_benchmarks_refresh(persona: str):
                          "--persona", persona,
                          "--platform", platform,
                          "--name", name,
-                         "--url", url or ''],
+                         "--rss-url", rss_url,
+                         "--rsshub", rsshub_url],
                         capture_output=True, timeout=60,
                         cwd=str(PROJECT_ROOT),
                     )
