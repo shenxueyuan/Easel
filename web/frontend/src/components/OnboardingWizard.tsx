@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { buildProfile, profileBuildStatus } from '../lib/api';
+import { buildProfile, profileBuildStatus, fetchProfileTemplates } from '../lib/api';
+import type { ProfileTemplate } from '../lib/api';
 
 const PLATFORMS = ['小红书', '抖音', 'B站', '视频号', '公众号', '微博', '知乎'];
 const TONES = ['专业严谨', '轻松幽默', '亲切日常', '犀利吐槽', '治愈温暖', '干货实用'];
@@ -11,6 +12,7 @@ interface OnboardingWizardProps {
 
 interface FormState {
   name: string;
+  template: string;
   platforms: string[];
   accountStage: string;
   links: Record<string, string>;
@@ -24,7 +26,7 @@ interface FormState {
 }
 
 const EMPTY: FormState = {
-  name: '', platforms: [], accountStage: '全新起号', links: {},
+  name: '', template: '', platforms: [], accountStage: '全新起号', links: {},
   direction: '', reason: '', goal: '', formats: '', likes: '', tone: '', avoid: '',
 };
 
@@ -36,6 +38,11 @@ export default function OnboardingWizard({ onClose, onCreated }: OnboardingWizar
   const [submitting, setSubmitting] = useState(false);
   const [phase, setPhase] = useState<'form' | 'enhancing'>('form');
   const [error, setError] = useState('');
+  const [templates, setTemplates] = useState<ProfileTemplate[]>([]);
+
+  useEffect(() => {
+    fetchProfileTemplates().then(setTemplates).catch(() => {});
+  }, []);
 
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) =>
     setForm((f) => ({ ...f, [k]: v }));
@@ -58,7 +65,7 @@ export default function OnboardingWizard({ onClose, onCreated }: OnboardingWizar
     setError('');
     try {
       // 后端异步：立即返回（基线已写、画像可用），不再长阻塞被代理超时掐断
-      const res = await buildProfile(form.name.trim(), form as unknown as Record<string, unknown>);
+      const res = await buildProfile(form.name.trim(), form as unknown as Record<string, unknown>, form.template || undefined);
       if (res.created) {
         setSubmitting(false);
         setPhase('enhancing'); // 进入后台增强等待（可跳过）
@@ -147,6 +154,47 @@ export default function OnboardingWizard({ onClose, onCreated }: OnboardingWizar
           <div style={{ minHeight: 240 }}>
             {step === 0 && (
               <>
+                <label style={label}>选择模板（快速填入预设内容，后续可修改）</label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 8, marginTop: 6 }}>
+                  {/* 从空白开始 */}
+                  <button
+                    onClick={() => set('template', '')}
+                    style={{
+                      padding: '10px 8px', borderRadius: 8, cursor: 'pointer', textAlign: 'center',
+                      border: form.template === '' ? '2px solid var(--accent)' : '1px solid var(--border)',
+                      background: form.template === '' ? 'rgba(99,102,241,0.06)' : 'var(--bg-elev)',
+                    }}
+                  >
+                    <div style={{ fontSize: 20 }}>📝</div>
+                    <div style={{ fontSize: 12, fontWeight: 600, marginTop: 4 }}>从空白开始</div>
+                    <div style={{ fontSize: 10, color: 'var(--text-tertiary)', marginTop: 2 }}>手动填写全部内容</div>
+                  </button>
+                  {templates.map((t) => (
+                    <button
+                      key={t.id}
+                      onClick={() => set('template', t.id)}
+                      title={t.summary}
+                      style={{
+                        padding: '10px 8px', borderRadius: 8, cursor: 'pointer', textAlign: 'center',
+                        border: form.template === t.id ? '2px solid var(--accent)' : '1px solid var(--border)',
+                        background: form.template === t.id ? 'rgba(99,102,241,0.06)' : 'var(--bg-elev)',
+                      }}
+                    >
+                      <div style={{ fontSize: 20 }}>{t.icon}</div>
+                      <div style={{ fontSize: 12, fontWeight: 600, marginTop: 4 }}>{t.name}</div>
+                      <div style={{ fontSize: 10, color: 'var(--text-tertiary)', marginTop: 2 }}>{t.desc}</div>
+                    </button>
+                  ))}
+                </div>
+                {form.template && (() => {
+                  const t = templates.find((x) => x.id === form.template);
+                  if (!t) return null;
+                  return (
+                    <div style={{ marginTop: 8, padding: '8px 12px', background: 'var(--bg-hover)', borderRadius: 6, fontSize: 12, color: 'var(--text-secondary)' }}>
+                      <strong>{t.icon} {t.name}</strong>：{t.summary}
+                    </div>
+                  );
+                })()}
                 <label style={label}>画像名 *（一个人设 = 一个画像，可跨多平台）</label>
                 <input style={box} value={form.name} placeholder="如：科技数码达人"
                   onChange={(e) => set('name', e.target.value)} />

@@ -58,10 +58,12 @@ logs/
 cookies.json
 skills/openclaw/skill-wechat-publisher/wechat-publisher.yaml
 
-# Local account profiles (publish only the reusable template)
+# Local account profiles (publish only the reusable template + preset templates)
 profiles/*/
 !profiles/_template/
 !profiles/_template/**
+!profiles/_templates/
+!profiles/_templates/**
 
 # 临时 / scratch（ad-hoc 运行残留）
 .scratch/

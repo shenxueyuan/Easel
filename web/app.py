@@ -4711,6 +4711,38 @@ async def api_cancel_publish_job(job_id: str):
 class ProfileBuildRequest(BaseModel):
     name: str
     form: dict
+    template: str = ''
+
+
+# ── 画像模板 ──
+TEMPLATES_DIR = PROFILES_DIR / "_templates"
+
+
+@app.get("/api/profile-templates")
+async def api_profile_templates():
+    """列出可用画像模板。模板目录 profiles/_templates/<id>/，每个含 template.json + 六维 .md。"""
+    if not TEMPLATES_DIR.is_dir():
+        return {'templates': []}
+    templates = []
+    for d in sorted(TEMPLATES_DIR.iterdir()):
+        if not d.is_dir() or d.name.startswith('.') or d.name.startswith('_'):
+            continue
+        meta_file = d / 'template.json'
+        if not meta_file.is_file():
+            continue
+        try:
+            meta = json.loads(meta_file.read_text(encoding='utf-8'))
+        except Exception:
+            continue
+        templates.append({
+            'id': meta.get('id', d.name),
+            'name': meta.get('name', d.name),
+            'desc': meta.get('desc', ''),
+            'icon': meta.get('icon', '📋'),
+            'group': meta.get('group', '其他'),
+            'summary': meta.get('summary', ''),
+        })
+    return {'templates': templates}
 
 
 @app.post("/api/profile/build")
@@ -4730,6 +4762,9 @@ async def api_profile_build(req: ProfileBuildRequest):
     pd = PROFILES_DIR / name
     if pd.exists():
         raise HTTPException(409, f'画像「{name}」已存在，请换一个名字')
+    template = (req.template or '').strip()
+    if template and not _apply_profile_template(name, template):
+        raise HTTPException(400, f'模板「{template}」不存在')
     _write_baseline_profile(name, req.form or {})
     instruction = _form_to_instruction(name, req.form or {})
     msg = (f"请执行 /skill-profile-builder 完善已存在的画像「{name}」。用户已通过表单提供以下信息，我已按此写好 profiles/{name}"
@@ -4794,8 +4829,21 @@ def _form_to_instruction(name: str, form: dict) -> str:
             f"\n期望调性：{g('tone')}\n不做的内容/红线：{g('avoid')}\n")
 
 
+def _apply_profile_template(name: str, template_id: str) -> bool:
+    """复制模板六维文件到新画像目录作为基线。返回是否成功。"""
+    src = TEMPLATES_DIR / template_id
+    if not src.is_dir():
+        return False
+    dst = PROFILES_DIR / name
+    dst.mkdir(parents=True, exist_ok=True)
+    for md_file in src.glob('*.md'):
+        (dst / md_file.name).write_text(md_file.read_text(encoding='utf-8'), encoding='utf-8')
+    return True
+
+
 def _write_baseline_profile(name: str, form: dict) -> None:
-    """从表单确定性生成六维基线文件。链接派生字段标 [待 AI 分析]。"""
+    """从表单确定性生成六维基线文件。若模板已预填六维文件（_apply_profile_template 先跑），
+    则只把表单中的用户输入追加/覆盖到对应段落，保留模板的详细预设内容。"""
     pd = PROFILES_DIR / name
     pd.mkdir(parents=True, exist_ok=True)
 
@@ -4813,6 +4861,46 @@ def _write_baseline_profile(name: str, form: dict) -> None:
     avoid = g('avoid')
     platforms = form.get('platforms') or []
     links = form.get('links') or {}
+
+    # 若模板已预填（identity.md 已存在且非空），只追加表单摘要到文件末尾，不覆盖模板内容
+    has_template = (pd / 'identity.md').is_file() and (pd / 'identity.md').read_text(encoding='utf-8').strip()
+    if has_template:
+        # 表单信息作为「用户补充」追加到 identity.md 末尾
+        supplement = []
+        if direction and direction != '[待补充]':
+            supplement.append(f"## 用户补充：内容方向\n\n{direction}")
+        if reason and reason != '[待补充]':
+            supplement.append(f"## 用户补充：差异化/优势\n\n{reason}")
+        if goal:
+            supplement.append(f"## 用户补充：运营目标\n\n{goal}")
+        if formats:
+            supplement.append(f"## 用户补充：产出形式\n\n{formats}")
+        if supplement:
+            existing = (pd / 'identity.md').read_text(encoding='utf-8')
+            (pd / 'identity.md').write_text(existing.rstrip() + '\n\n' + '\n\n'.join(supplement) + '\n', encoding='utf-8')
+        # style.md：追加用户选择的语气
+        if tone and tone != '[待分析]':
+            existing = (pd / 'style.md').read_text(encoding='utf-8')
+            (pd / 'style.md').write_text(existing.rstrip() + f"\n\n## 用户补充：期望调性\n\n{tone}\n", encoding='utf-8')
+        # platforms.md：追加用户填的平台链接
+        if platforms:
+            plat_lines = []
+            for p in platforms:
+                url = links.get(p, '')
+                plat_lines.append(f"## {p}\n\n主页：{url or '[待补充]'}\n粉丝量级 / 内容形式：[待补充]\n")
+            existing = (pd / 'platforms.md').read_text(encoding='utf-8')
+            (pd / 'platforms.md').write_text(existing.rstrip() + '\n\n' + '\n'.join(plat_lines) + '\n', encoding='utf-8')
+        # preferences.md：追加用户填的红线
+        if avoid:
+            existing = (pd / 'preferences.md').read_text(encoding='utf-8')
+            (pd / 'preferences.md').write_text(existing.rstrip() + f"\n\n## 用户补充：不做的内容\n\n{avoid}\n", encoding='utf-8')
+        # memory.md：追加用户填的对标
+        if likes:
+            existing = (pd / 'memory.md').read_text(encoding='utf-8')
+            (pd / 'memory.md').write_text(existing.rstrip() + f"\n\n## 用户补充：喜欢的内容/对标\n\n{likes}\n", encoding='utf-8')
+        return
+
+    # 无模板：原有逻辑，从表单确定性生成六维文件
     (pd / 'identity.md').write_text(
         f"# 身份定位\n\n## 我是谁\n\n{direction}\n\n## 差异化\n\n{reason}\n\n## 内容方向\n\n{direction}"
         f"{'（形式：' + formats + '）' if formats else ''}\n"

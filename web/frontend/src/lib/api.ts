@@ -271,13 +271,26 @@ export function runAgent(message: string, persona?: string): Promise<{ response:
   });
 }
 
-/** 从表单构建画像（首次引导）。后端写基线 + agent 分析社媒链接增强。 */
-export function buildProfile(name: string, form: Record<string, unknown>): Promise<ProfileBuildResponse> {
+/** 从表单构建画像（首次引导）。后端写基线 + agent 分析社媒链接增强。template 为画像模板 ID（可选）。 */
+export function buildProfile(name: string, form: Record<string, unknown>, template?: string): Promise<ProfileBuildResponse> {
   return request<ProfileBuildResponse>('/api/profile/build', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, form }),
+    body: JSON.stringify({ name, form, template: template || '' }),
   });
+}
+
+/** 画像模板列表。 */
+export interface ProfileTemplate {
+  id: string;
+  name: string;
+  desc: string;
+  icon: string;
+  group: string;
+  summary: string;
+}
+export function fetchProfileTemplates(): Promise<ProfileTemplate[]> {
+  return request<{ templates: ProfileTemplate[] }>('/api/profile-templates').then((r) => r.templates);
 }
 
 /** 轮询画像 AI 增强进度（构建异步化后用）。 */
