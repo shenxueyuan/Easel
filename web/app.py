@@ -1395,9 +1395,18 @@ async def api_chat_stream(req: ChatRequest):
             abnormal_exit = rc not in (0, None)
             incomplete_stream = emitted and run_info.get("last_ev") not in (None, "assistant_message_end")
             incomplete_tail = emitted and run_info.get("text_tail", "").rstrip()[-1:] in ("：", ":")
+            # 网关模式下 raw 流经常为空，无法靠 last_ev 判断；若进程正常退出但
+            # 正文以「计划/下一步」结尾，说明模型只输出了一半想法就停了。
+            plan_tail = clean.rstrip()[-140:]
+            incomplete_plan = (
+                emitted and not run_info.get("saw_message_end")
+                and run_info.get("last_ev") is None
+                and rc in (0, None)
+                and re.search(r"(?:现在做|接下来|我要先|再写入|再执行|再出稿|再做|先定|再写入|再检查)\b", plan_tail)
+            )
             needs_recovery = (
                 abnormal_exit or sr in ("max_tokens", "length", "model_length", "tool_use")
-                or incomplete_stream or incomplete_tail
+                or incomplete_stream or incomplete_tail or incomplete_plan
             ) and sk not in _STOPPED_CHAT
             if needs_recovery:
                 to_client("activity", "🔄 检测到生成异常，正在自动恢复并续写…")
@@ -1429,6 +1438,8 @@ async def api_chat_stream(req: ChatRequest):
                     note = "\n\n---\n⚠️ 工具执行后的续接失败，请回复「继续」。"
                 elif incomplete_stream or incomplete_tail:
                     note = "\n\n---\n⚠️ 输出流未正常收尾，自动续写失败。请回复「继续」。"
+                elif incomplete_plan:
+                    note = "\n\n---\n⚠️ 输出停在了计划阶段，没有继续完成文案。请回复「继续」。"
                 if note:
                     full_text.append(note)
                     to_client("token", note)
