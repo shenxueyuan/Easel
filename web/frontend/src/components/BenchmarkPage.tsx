@@ -10,6 +10,8 @@ import {
   IconTarget, IconPlus, IconTrash, IconRefresh, IconCheck, IconBookmark,
   IconEdit, IconChevron,
 } from './icons';
+import { BENCHMARK_POOL, type PoolAccount } from '../lib/benchmarkPool';
+import { parseProfileUrl } from '../lib/benchmarkUrl';
 
 interface BenchmarkPageProps {
   persona: string;
@@ -80,6 +82,8 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
   const [selectedPlatform, setSelectedPlatform] = useState('all');
   const [selectedAccount, setSelectedAccount] = useState('');
   const [selectedPostKey, setSelectedPostKey] = useState('');
+  const [poolQuery, setPoolQuery] = useState('');
+  const [poolPlatform, setPoolPlatform] = useState('all');
 
   const showToast = (message: string) => {
     setToast(message);
@@ -137,6 +141,16 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
 
   const selectedFeedPost = feedPosts.find((item) => item.key === selectedPostKey) || feedPosts[0];
 
+  const filteredPool = useMemo(() => {
+    const q = poolQuery.trim().toLowerCase();
+    return BENCHMARK_POOL.filter((item) => {
+      if (poolPlatform !== 'all' && item.platform !== poolPlatform) return false;
+      if (!q) return true;
+      const text = `${item.name} ${item.category} ${item.tags.join(' ')} ${item.platform}`.toLowerCase();
+      return text.includes(q);
+    });
+  }, [poolQuery, poolPlatform]);
+
   useEffect(() => {
     if (feedPosts.length && !feedPosts.some((item) => item.key === selectedPostKey)) {
       setSelectedPostKey(feedPosts[0].key);
@@ -156,6 +170,11 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
 
   const addAccount = () => {
     setAccounts((current) => [...current, { platform: 'weibo', name: '', rss_url: '' }]);
+  };
+
+  const addFromPool = (item: PoolAccount) => {
+    setAccounts((current) => [...current, { platform: item.platform, name: item.name, rss_url: item.rss_url }]);
+    showToast(`已添加 ${item.name}`);
   };
 
   const loadExamples = () => {
@@ -178,7 +197,16 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
   };
 
   const updateAccount = (index: number, field: keyof BenchmarkAccount, value: string) => {
-    setAccounts((current) => current.map((account, itemIndex) => itemIndex === index ? { ...account, [field]: value } : account));
+    setAccounts((current) => current.map((account, itemIndex) => {
+      if (itemIndex !== index) return account;
+      if (field === 'rss_url' && value.startsWith('http')) {
+        const parsed = parseProfileUrl(value);
+        if (parsed) {
+          return { ...account, platform: parsed.platform, name: account.name || parsed.name, rss_url: parsed.rss_url };
+        }
+      }
+      return { ...account, [field]: value };
+    }));
   };
 
   const onPlatformChange = (index: number, platform: string) => {
@@ -298,7 +326,7 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
                 <button className="btn btn-sm btn-primary" onClick={addAccount}><IconPlus size={14} /> 添加账号</button>
               </div>
             </div>
-            <p className="benchmarks-section-desc">选择平台后填写 RSSHub 路由或完整 RSS 地址。</p>
+            <p className="benchmarks-section-desc">选择平台后填写 RSSHub 路由、完整 RSS 地址，或直接粘贴平台主页链接自动识别。</p>
 
             {loading ? (
               <div className="loading"><div className="spinner" />加载中…</div>
@@ -330,6 +358,47 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
                     </div>
                   );
                 })}
+              </div>
+            )}
+          </section>
+
+          <section className="card benchmark-settings-card">
+            <div className="benchmarks-section-head">
+              <h3 className="benchmarks-section-title">推荐账号池</h3>
+              <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>点击即可加入当前画像</span>
+            </div>
+            <p className="benchmarks-section-desc">按领域或平台筛选，一键添加热门对标账号。</p>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+              <input
+                className="field"
+                style={{ flex: 1 }}
+                value={poolQuery}
+                onChange={(event) => setPoolQuery(event.target.value)}
+                placeholder="搜索账号、标签、领域…"
+              />
+              <select
+                className="field benchmark-platform"
+                value={poolPlatform}
+                onChange={(event) => setPoolPlatform(event.target.value)}
+              >
+                <option value="all">全部平台</option>
+                {PLATFORM_TEMPLATES.map((platform) => (
+                  <option key={platform.key} value={platform.key}>{platform.label}</option>
+                ))}
+              </select>
+            </div>
+            {filteredPool.length === 0 ? (
+              <p className="benchmarks-section-desc">没有匹配的推荐账号。</p>
+            ) : (
+              <div className="benchmarks-list" style={{ maxHeight: 320, overflowY: 'auto' }}>
+                {filteredPool.map((item, index) => (
+                  <div key={`${item.platform}-${item.name}-${index}`} className="benchmark-row">
+                    <span className="benchmark-platform" style={{ fontSize: 13 }}>{platformLabel(item.platform)}</span>
+                    <span className="benchmark-name" style={{ fontSize: 13 }}>{item.name}</span>
+                    <span className="benchmark-url" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{item.category} · {item.tags.join(' / ')}</span>
+                    <button className="btn btn-sm btn-primary" onClick={() => addFromPool(item)}>添加</button>
+                  </div>
+                ))}
               </div>
             )}
           </section>
