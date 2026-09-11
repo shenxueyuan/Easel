@@ -8,11 +8,13 @@ import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 from urllib.request import urlopen, Request
 from urllib.error import HTTPError
@@ -22,7 +24,7 @@ from typing import Literal
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
@@ -456,10 +458,11 @@ def run_agent_sync(msg: str, timeout: int = TIMEOUT_DIRECT, session_id: str | No
     sk = session_id or f'web-{int(time.time() * 1000)}'
     _heal_openclaw_session(sk)   # 清洗历史里无签名 thinking 块，防回放失效
     # 钉死 --session-id 让 OpenClaw 每轮续同一 transcript（防跨天空闲后新起空会话丢历史，见 _openclaw_session_id）
-    cmd = ['openclaw', '--profile', OPENCLAW_PROFILE, 'agent', '--local', '--agent', 'main',
-           '--session-key', f'agent:main:{sk}', '--session-id', _openclaw_session_id(sk),
-           '--thinking', thinking_level,
-           '--timeout', str(timeout), '--message', msg]
+    cmd = _agent_cli_prefix()
+    cmd.extend(['--agent', 'main',
+                '--session-key', f'agent:main:{sk}', '--session-id', _openclaw_session_id(sk),
+                '--thinking', thinking_level,
+                '--timeout', str(timeout), '--message', msg])
     # 跨进程锁：同一会话同时刻只跑一个 openclaw，防并发 takeover 崩溃（rc=1）
     xlock = _CrossProcLock(sk)
     if not xlock.acquire(timeout=min(timeout, 300)):
@@ -481,6 +484,56 @@ def check_gateway() -> bool:
         return r.returncode == 0
     except Exception:
         return False
+
+
+def _agent_cli_prefix() -> list[str]:
+    cmd = ['openclaw', '--profile', OPENCLAW_PROFILE, 'agent']
+    if not check_gateway():
+        cmd.append('--local')
+    return cmd
+
+
+def _agent_failure_text(output: str, returncode: int | None) -> str:
+    lower = output.lower()
+    if 'billing error' in lower or 'insufficient balance' in lower or 'run out of credits' in lower:
+        return '主模型额度不足'
+    if 'authentication failed' in lower or 'api key' in lower and returncode not in (0, None):
+        return '主模型鉴权失败'
+    if 'gateway not reachable' in lower or 'econnrefused' in lower or 'connection closed' in lower:
+        return '模型网关连接失败'
+    if 'gateway is running for this state directory' in lower:
+        return '模型运行模式冲突'
+    if "couldn't generate a response" in lower or 'candidate_failed' in lower or 'reason=format' in lower:
+        return '主模型返回格式异常'
+    return f'执行进程异常退出（{returncode}）'
+
+
+def _direct_chat_fallback(message: str, partial: str = '', timeout: int = 180) -> str:
+    api_key = _read_env().get('DASHSCOPE_API_KEY', '').strip()
+    if not api_key:
+        return ''
+    if partial:
+        prompt = (f'用户原始任务：\n{message}\n\n前一个模型已经生成了以下内容，但执行意外中断：\n{partial[-12000:]}\n\n'
+                  '请直接续写并完整完成用户任务，不要重复已有内容，不要解释中断原因。')
+    else:
+        prompt = message
+    payload = {
+        'model': _read_env().get('EASEL_FALLBACK_MODEL', 'qwen-plus'),
+        'messages': [{'role': 'user', 'content': prompt[-100000:]}],
+        'temperature': 0.7,
+    }
+    req = Request(
+        'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+        data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
+        headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+        method='POST',
+    )
+    try:
+        with urlopen(req, timeout=timeout, context=ssl._create_unverified_context()) as response:
+            result = json.loads(response.read().decode('utf-8'))
+        return str(result['choices'][0]['message']['content']).strip()
+    except Exception:
+        return ''
 
 
 def _file_kind(name: str) -> str:
@@ -658,6 +711,40 @@ async def static_file(path: str):
     # HTML entrypoints must not be cached: the intro page is edited in-place during local development.
     headers = {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"} if fp.suffix.lower() in {".html", ".htm"} else {}
     return FileResponse(fp, headers=headers)
+
+
+_IMAGE_PROXY_HOSTS = {
+    "hdslb.com", "bilibili.com", "xhscdn.com", "douyinpic.com", "qpic.cn",
+}
+
+
+def _image_proxy_host_allowed(host: str) -> bool:
+    host = host.lower().rstrip('.')
+    return any(host == suffix or host.endswith(f'.{suffix}') for suffix in _IMAGE_PROXY_HOSTS)
+
+
+@app.get("/api/image-proxy")
+async def api_image_proxy(url: str):
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or not _image_proxy_host_allowed(parsed.hostname):
+        raise HTTPException(400, "不支持的图片地址")
+    referer = "https://www.bilibili.com/" if parsed.hostname.endswith("hdslb.com") else ""
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "image/avif,image/webp,image/*,*/*;q=0.8"}
+    if referer:
+        headers["Referer"] = referer
+    try:
+        with urlopen(Request(url, headers=headers), timeout=15, context=ssl._create_unverified_context()) as upstream:
+            final_host = urllib.parse.urlparse(upstream.geturl()).hostname or ""
+            if not _image_proxy_host_allowed(final_host):
+                raise HTTPException(400, "图片重定向地址不受支持")
+            content = upstream.read(15 * 1024 * 1024 + 1)
+            if len(content) > 15 * 1024 * 1024:
+                raise HTTPException(413, "图片过大")
+            return Response(content, media_type=upstream.headers.get_content_type(), headers={"Cache-Control": "public, max-age=86400"})
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(502, f"图片加载失败：{error}") from error
 
 
 @app.get("/api/status")
@@ -1114,12 +1201,13 @@ async def api_chat_stream(req: ChatRequest):
         os.close(fd)
         raw_path = Path(raw_path)
 
-        cmd = [
-            "openclaw", "--profile", OPENCLAW_PROFILE, "agent", "--local", "--agent", "main",
-            "--session-key", f"agent:main:{sk}", "--session-id", _openclaw_session_id(sk),
+        cmd = _agent_cli_prefix()
+        cmd.extend([
+            "--agent", "main", "--session-key", f"agent:main:{sk}",
+            "--session-id", _openclaw_session_id(sk),
             "--thinking", req.thinking or THINKING_LEVEL,
             "--timeout", str(TIMEOUT_CHAT), "--message", message,
-        ]
+        ])
         env = _proxy_env()
         env["OPENCLAW_RAW_STREAM"] = "1"
         env["OPENCLAW_RAW_STREAM_PATH"] = str(raw_path)
@@ -1174,7 +1262,7 @@ async def api_chat_stream(req: ChatRequest):
         expected_raw_session_id = _openclaw_session_id(sk)
         run_info: dict = {"stop_reason": None, "last_ev": None, "saw_message_end": False,
                           "fetch_count": 0, "token_chars": 0, "thinking_chars": 0,
-                          "delegated": False, "ignored_foreign_events": 0}
+                          "delegated": False, "ignored_foreign_events": 0, "recovered": False}
 
         def _drain_stdout():
             try:
@@ -1303,39 +1391,44 @@ async def api_chat_stream(req: ChatRequest):
             except Exception:
                 pass
             sr = run_info.get("stop_reason")
+            clean = clean_agent_output("".join(stdout_lines))
+            abnormal_exit = rc not in (0, None)
+            incomplete_stream = emitted and run_info.get("last_ev") not in (None, "assistant_message_end")
+            incomplete_tail = emitted and run_info.get("text_tail", "").rstrip()[-1:] in ("：", ":")
+            needs_recovery = (
+                abnormal_exit or sr in ("max_tokens", "length", "model_length", "tool_use")
+                or incomplete_stream or incomplete_tail
+            ) and sk not in _STOPPED_CHAT
+            if needs_recovery:
+                to_client("activity", "🔄 检测到生成异常，正在自动恢复并续写…")
+                partial = "".join(full_text)
+                fallback = await loop.run_in_executor(None, _direct_chat_fallback, message, partial)
+                if fallback:
+                    separator = "\n\n" if partial else ""
+                    recovered_text = separator + fallback
+                    emitted = True
+                    run_info["recovered"] = True
+                    full_text.append(recovered_text)
+                    to_client("token", recovered_text)
             if not emitted:
-                clean = clean_agent_output("".join(stdout_lines))
-                if clean:
+                if clean and not abnormal_exit:
                     emitted = True
                     full_text.append(clean)
                     to_client("token", clean)
-                elif rc not in (0, None):
-                    err = clean_agent_output("".join(stdout_lines))[:200]
-                    to_client("error", f"❌ 执行失败（退出码 {rc}）{' — ' + err if err else ''}")
-            # 收尾检测：即使已吐了内容，只要不是「正常收尾」就显式告知——
-            # 否则被截断（触顶）/被杀（负载）/流被中断，都会被当成「清晰地答完了」，
-            # 用户看到的就是「答一半突然停、也不说做完」（本 bug 根因）。
-            # 正常收尾的唯一标志：raw 流最后一个事件是 assistant_message_end。
-            # 用户显式「停止」不是异常中断 → 不报「被中断」告警（前端已就地标注「已停止」）。
-            if (emitted or run_info["thinking_chars"]) and sk not in _STOPPED_CHAT:
+                elif abnormal_exit and not run_info["recovered"]:
+                    error_text = f"❌ {_agent_failure_text(clean, rc)}，自动恢复失败，请检查模型配置后重试"
+                    full_text.append(error_text)
+                    to_client("error", error_text)
+            if (emitted or run_info["thinking_chars"]) and sk not in _STOPPED_CHAT and not run_info["recovered"]:
                 note = None
                 if sr and sr in ("max_tokens", "length", "model_length"):
-                    note = (f"\n\n---\n⚠️ 上面这条**被截断**了（stopReason={sr}，单条回复触顶）。"
-                            f"回我「继续」我接着写完，或让我把任务拆小一点。")
-                elif rc not in (0, None):
-                    note = (f"\n\n---\n⚠️ 生成**被中断**（退出码 {rc}，多半是超时或系统负载过高把进程杀了），"
-                            f"不是正常收尾。可以让我重试。")
+                    note = f"\n\n---\n⚠️ 回复达到模型长度上限，自动续写失败（stopReason={sr}）。请回复「继续」。"
+                elif abnormal_exit:
+                    note = f"\n\n---\n⚠️ {_agent_failure_text(clean, rc)}，自动恢复失败。请重试。"
                 elif sr == "tool_use":
-                    note = ("\n\n---\n⚠️ 我刚做完这一步、**正要执行下一步操作时中断了**"
-                            "（本轮以工具调用结尾却没能继续，前端把它当成答完了）。回我「继续」我接着做。")
-                elif run_info.get("last_ev") not in (None, "assistant_message_end"):
-                    note = ("\n\n---\n⚠️ 这条**可能没写完**——模型的输出/思考流被中断、没有正常收尾"
-                            "（多为网络或模型代理把长回复的流掐断了）。回我「继续」，或重试。")
-                elif run_info.get("text_tail", "").rstrip()[-1:] in ("：", ":"):
-                    # 正常收尾但正文停在冒号 = 模型"我要做X："后没接着做（多为要接工具/下一步却断了）。
-                    # 用户实测「所有莫名停止都停在冒号」——这一条兜住这个模式。
-                    note = ("\n\n---\n⚠️ 我似乎停在了冒号处、没接着把后面的内容/操作做出来。"
-                            "回我「继续」我补上。")
+                    note = "\n\n---\n⚠️ 工具执行后的续接失败，请回复「继续」。"
+                elif incomplete_stream or incomplete_tail:
+                    note = "\n\n---\n⚠️ 输出流未正常收尾，自动续写失败。请回复「继续」。"
                 if note:
                     full_text.append(note)
                     to_client("token", note)
@@ -1376,6 +1469,7 @@ async def api_chat_stream(req: ChatRequest):
                         "thinking_chars": run_info["thinking_chars"],
                         "delegated": run_info["delegated"],
                         "ignored_foreign_events": run_info["ignored_foreign_events"],
+                        "recovered": run_info["recovered"],
                         "text_tail": run_info.get("text_tail", ""),
                         "stdout_tail": tail,
                     }, ensure_ascii=False) + "\n")

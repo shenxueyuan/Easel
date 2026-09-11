@@ -390,6 +390,23 @@ def test_chat_route_is_registered_to_handler_not_request_model():
     assert route.endpoint is web.api_chat
 
 
+def test_agent_cli_uses_running_gateway(monkeypatch):
+    monkeypatch.setattr(web, "check_gateway", lambda: True)
+    assert web._agent_cli_prefix() == ["openclaw", "--profile", "easel", "agent"]
+
+
+def test_agent_cli_uses_local_mode_without_gateway(monkeypatch):
+    monkeypatch.setattr(web, "check_gateway", lambda: False)
+    assert web._agent_cli_prefix()[-1] == "--local"
+
+
+def test_image_proxy_only_allows_known_media_hosts():
+    assert web._image_proxy_host_allowed("i1.hdslb.com")
+    assert web._image_proxy_host_allowed("mmbiz.qpic.cn")
+    assert not web._image_proxy_host_allowed("127.0.0.1")
+    assert not web._image_proxy_host_allowed("hdslb.com.example.org")
+
+
 def test_publish_job_route_does_not_match_native_platform_route():
     from starlette.routing import Match
 

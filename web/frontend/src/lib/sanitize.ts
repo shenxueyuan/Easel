@@ -29,5 +29,17 @@ function normalizeTables(md: string): string {
 export function renderMarkdown(md: string): string {
   if (!md) return '';
   const raw = marked.parse(normalizeTables(md)) as string;
-  return DOMPurify.sanitize(raw);
+  const clean = DOMPurify.sanitize(raw, { ADD_ATTR: ['referrerpolicy'] });
+  const template = document.createElement('template');
+  template.innerHTML = clean;
+  template.content.querySelectorAll('img').forEach((image) => {
+    image.referrerPolicy = 'no-referrer';
+    try {
+      const source = new URL(image.src, window.location.origin);
+      if (source.hostname === 'hdslb.com' || source.hostname.endsWith('.hdslb.com')) {
+        image.src = `/api/image-proxy?url=${encodeURIComponent(source.href)}`;
+      }
+    } catch { return; }
+  });
+  return template.innerHTML;
 }

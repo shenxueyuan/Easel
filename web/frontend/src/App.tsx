@@ -429,13 +429,16 @@ export default function App() {
   }, [sendUserAndStream]);
 
   // 热点「一键做成内容」：新开会话，把选题作为指令发出去，跳到对话页。
-  const handleUseTopic = useCallback((title: string) => {
+  const handleUseTopic = useCallback((title: string, sourceContext?: string) => {
     const prompt = `围绕当前热点「${title}」：先判断它适不适合我的账号赛道；若合适，给 2-3 个差异化的二创角度，并把你最推荐的那条写成可直接发布的文案初稿。`;
+    const agentPrompt = sourceContext?.trim()
+      ? `${prompt}\n\n以下是对标内容的来源信息与完整正文，请基于正文事实进行分析和二创，不要只根据标题推测：\n\n${sourceContext.trim()}`
+      : prompt;
     const ns = createSession(selectedPersona || undefined);
     setSessions((prev) => { const u = [ns, ...prev]; saveSessions(u); return u; });
     setActiveSessionId(ns.id);
     setCurrentPage('chat');
-    sendUserAndStream(ns.id, prompt);
+    sendUserAndStream(ns.id, prompt, [], agentPrompt);
   }, [selectedPersona, sendUserAndStream]);
 
   // 对标内容「一键拆解」：跳到爆款拆解页，预填内容

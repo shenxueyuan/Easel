@@ -15,7 +15,7 @@ interface BenchmarkPageProps {
   persona: string;
   onNavigate: (page: Page) => void;
   onBreakdown: (content: string) => void;
-  onUseTopic: (title: string) => void;
+  onUseTopic: (title: string, sourceContext?: string) => void;
 }
 
 interface FeedPost {
@@ -449,7 +449,10 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
                   {saved.has(selectedFeedPost.key) ? '已收藏' : '收藏'}
                 </button>
                 <button className="btn btn-sm" onClick={() => onBreakdown(articleContent(selectedFeedPost.post))}>拆解文章</button>
-                <button className="btn btn-sm btn-primary" onClick={() => onUseTopic(selectedFeedPost.post.title)}>基于此创作</button>
+                <button className="btn btn-sm btn-primary" onClick={() => onUseTopic(
+                  selectedFeedPost.post.title,
+                  `来源平台：${platformLabel(selectedFeedPost.group.platform)}\n来源账号：${selectedFeedPost.group.account}\n原文链接：${selectedFeedPost.post.url || '无'}\n\n${articleContent(selectedFeedPost.post)}`,
+                )}>基于此创作</button>
                 {selectedFeedPost.post.url && (
                   <a className="btn btn-sm" href={selectedFeedPost.post.url} target="_blank" rel="noreferrer">查看原文</a>
                 )}
