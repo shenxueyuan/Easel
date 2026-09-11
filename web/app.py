@@ -5272,6 +5272,129 @@ async def api_trends_industry(persona: str = '', sources: str = 'ai-news,it-news
 
 # ── 对标账号监控 ──────────────────────────────────────────────────────
 BENCHMARKS_DIR = OUTPUTS_DIR / "_benchmarks"
+BENCHMARK_POOL_FILE = OUTPUTS_DIR / "_benchmark_pool.json"
+_BENCHMARK_POOL_LOCK = threading.Lock()
+_BENCHMARK_SEARCH_CACHE: dict[tuple, tuple[float, dict]] = {}
+_BENCHMARK_POOL_SEEDS = [
+    {"platform": "xiaohongshu", "name": "AI时间炼金师MetaX", "rss_url": "/xiaohongshu/user/59f87643db2e602e550c9714/notes", "category": "AI", "tags": ["AI", "小红书"]},
+    {"platform": "bilibili", "name": "影视飓风", "rss_url": "/bilibili/user/dynamic/946974", "profile_url": "https://space.bilibili.com/946974", "category": "科技视频", "tags": ["视频", "B站", "科技"]},
+    {"platform": "weibo", "name": "36氪", "rss_url": "/weibo/user/1750070171", "category": "科技资讯", "tags": ["创业", "科技", "资讯"]},
+    {"platform": "zhihu", "name": "王晋东", "rss_url": "/zhihu/people/activities/jindongwang", "category": "AI", "tags": ["AI", "学术", "知乎"]},
+    {"platform": "douyin", "name": "杜雨说AI", "rss_url": "/douyin/user/MS4wLjABAAAALpAaN8biUOl9Z3VYzcKltEFdgvK5I2AeVD5bO8NC8IlysGEvUNZnw6A20jjuEpLd", "category": "AI", "tags": ["AI", "短视频"]},
+    {"platform": "toutiao", "name": "赛文乔伊", "rss_url": "/toutiao/user/token/MS4wLjABAAAA5z7a0VRwQxKYGNNShtjTD8vgAPVEC-lUzy294vSdAuw", "category": "科技", "tags": ["科技", "资讯"]},
+    {"platform": "36kr", "name": "36氪快讯", "rss_url": "/36kr/newsflashes", "category": "创投资讯", "tags": ["新闻", "创投"]},
+    {"platform": "wechat", "name": "机器之心", "rss_url": "https://wechat2rss.xlab.app/feed/51e92aad2728acdd1fda7314be32b16639353001.xml", "category": "AI", "tags": ["AI", "公众号"]},
+    {"platform": "custom", "name": "GitHub Blog", "rss_url": "https://github.blog/feed/", "category": "开发者", "tags": ["开源", "GitHub"]},
+    {"platform": "weibo", "name": "雷军", "rss_url": "/weibo/user/1892653244", "category": "人物", "tags": ["企业家", "小米"]},
+    {"platform": "bilibili", "name": "极客湾Geekerwan", "rss_url": "/bilibili/user/dynamic/337312411", "profile_url": "https://space.bilibili.com/337312411", "category": "数码评测", "tags": ["评测", "数码", "B站"]},
+    {"platform": "xiaohongshu", "name": "半佛仙人", "rss_url": "/xiaohongshu/user/5c0b3e3b000000001001c6b5/notes", "category": "商业观点", "tags": ["商业", "观点", "小红书"]},
+]
+
+
+def _benchmark_identifier(platform: str, rss_url: str, explicit: str = '') -> str:
+    if explicit:
+        return str(explicit).strip()
+    patterns = {
+        "bilibili": r"/bilibili/user/(?:dynamic|video)/(\d+)",
+        "weibo": r"/weibo/user/([^/?]+)",
+        "zhihu": r"/zhihu/people/(?:activities/)?([^/?]+)",
+        "xiaohongshu": r"/xiaohongshu/user/([^/?]+)",
+        "douyin": r"/douyin/user/([^/?]+)",
+        "toutiao": r"/toutiao/user/(?:token/)?([^/?]+)",
+        "wechat": r"/wechat/mp/([^/?]+)",
+    }
+    match = re.search(patterns.get(platform, r"$^"), rss_url)
+    if match:
+        return match.group(1)
+    return hashlib.sha256(rss_url.encode('utf-8')).hexdigest()[:16] if rss_url else ''
+
+
+def _normalize_benchmark_account(account: dict, source: str = '') -> dict:
+    platform = str(account.get("platform", "")).strip()
+    name = str(account.get("name", "")).strip()
+    rss_url = str(account.get("rss_url", account.get("url", ""))).strip()
+    identifier = _benchmark_identifier(platform, rss_url, str(account.get("identifier", "")))
+    normalized = {
+        "id": f"{platform}:{identifier}" if platform and identifier else "",
+        "platform": platform,
+        "identifier": identifier,
+        "name": name,
+        "profile_url": str(account.get("profile_url", "")).strip(),
+        "rss_url": rss_url,
+        "avatar": str(account.get("avatar", "")).strip(),
+        "description": str(account.get("description", account.get("usign", ""))).strip(),
+        "followers": account.get("followers", account.get("fans")),
+        "category": str(account.get("category", "")).strip(),
+        "tags": [str(tag).strip() for tag in account.get("tags", []) if str(tag).strip()],
+        "source": str(account.get("source", source)).strip() or source,
+        "verified": bool(account.get("verified", False)),
+        "feed_status": str(account.get("feed_status", "unknown")),
+        "last_verified_at": int(account.get("last_verified_at", 0) or 0),
+    }
+    if normalized["followers"] in ("", None):
+        normalized["followers"] = None
+    else:
+        try:
+            normalized["followers"] = int(normalized["followers"])
+        except (TypeError, ValueError):
+            normalized["followers"] = None
+    return normalized
+
+
+def _dedupe_benchmark_accounts(accounts: list[dict]) -> list[dict]:
+    result: list[dict] = []
+    positions: dict[str, int] = {}
+    for raw in accounts:
+        account = _normalize_benchmark_account(raw)
+        if not account["platform"] or not account["name"] or not account["rss_url"]:
+            continue
+        key = account["id"] or f'{account["platform"]}:{account["rss_url"]}'
+        if key in positions:
+            old = result[positions[key]]
+            result[positions[key]] = {**old, **{k: v for k, v in account.items() if v not in ("", None, [], False)}}
+        else:
+            positions[key] = len(result)
+            result.append(account)
+    return result
+
+
+def _write_benchmark_pool(accounts: list[dict]) -> None:
+    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = BENCHMARK_POOL_FILE.with_suffix('.json.tmp')
+    tmp.write_text(json.dumps({"version": 1, "accounts": accounts}, ensure_ascii=False, indent=2), encoding='utf-8')
+    os.replace(tmp, BENCHMARK_POOL_FILE)
+
+
+def _load_benchmark_pool() -> list[dict]:
+    with _BENCHMARK_POOL_LOCK:
+        if BENCHMARK_POOL_FILE.is_file():
+            try:
+                payload = json.loads(BENCHMARK_POOL_FILE.read_text(encoding='utf-8'))
+                return _dedupe_benchmark_accounts(payload.get("accounts", []))
+            except Exception:
+                pass
+        accounts = _dedupe_benchmark_accounts([
+            {**seed, "source": "builtin", "verified": True, "feed_status": "unknown"}
+            for seed in _BENCHMARK_POOL_SEEDS
+        ])
+        _write_benchmark_pool(accounts)
+        return accounts
+
+
+def _upsert_benchmark_pool(account: dict) -> dict:
+    normalized = _normalize_benchmark_account(account)
+    if not normalized["id"] or not normalized["name"] or not normalized["rss_url"]:
+        raise ValueError('账号缺少平台、名称或订阅地址')
+    with _BENCHMARK_POOL_LOCK:
+        existing = []
+        if BENCHMARK_POOL_FILE.is_file():
+            try:
+                existing = json.loads(BENCHMARK_POOL_FILE.read_text(encoding='utf-8')).get("accounts", [])
+            except Exception:
+                existing = []
+        accounts = _dedupe_benchmark_accounts([*_BENCHMARK_POOL_SEEDS, *existing, normalized])
+        _write_benchmark_pool(accounts)
+    return next(item for item in accounts if item["id"] == normalized["id"])
 
 
 def _benchmarks_config_path(persona: str) -> Path:
@@ -5282,7 +5405,9 @@ def _load_benchmarks_config(persona: str) -> dict:
     f = _benchmarks_config_path(persona)
     if f.is_file():
         try:
-            return json.loads(f.read_text(encoding='utf-8'))
+            payload = json.loads(f.read_text(encoding='utf-8'))
+            return {"accounts": _dedupe_benchmark_accounts(payload.get("accounts", [])),
+                    "keywords": str(payload.get("keywords", ""))}
         except Exception:
             pass
     return {"accounts": [], "keywords": ""}
@@ -5291,12 +5416,19 @@ def _load_benchmarks_config(persona: str) -> dict:
 def _save_benchmarks_config(persona: str, config: dict) -> None:
     f = _benchmarks_config_path(persona)
     f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding='utf-8')
+    accounts = _dedupe_benchmark_accounts(config.get("accounts", []))
+    tmp = f.with_suffix('.json.tmp')
+    tmp.write_text(json.dumps({"accounts": accounts, "keywords": str(config.get("keywords", ""))},
+                              ensure_ascii=False, indent=2), encoding='utf-8')
+    os.replace(tmp, f)
+    for account in accounts:
+        if account.get("verified"):
+            _upsert_benchmark_pool(account)
 
 
 class BenchmarkConfigRequest(BaseModel):
     persona: str
-    accounts: list[dict] = []   # [{platform, name, rss_url}]
+    accounts: list[dict] = Field(default_factory=list)
     keywords: str = ''
     rsshub_url: str = ''        # 全局 RSSHub 实例地址
 
@@ -5469,45 +5601,152 @@ async def api_benchmarks_status(persona: str):
     return {"state": "unknown", "log": ""}
 
 
-def _search_bilibili_users(keyword: str, page: int = 1) -> list[dict]:
-    q = urllib.parse.quote(keyword)
-    url = f"https://api.bilibili.com/x/web-interface/search/type?search_type=bili_user&keyword={q}&page={page}"
+def _verify_benchmark_account(account: dict) -> dict:
+    normalized = _normalize_benchmark_account(account)
+    rss_url = normalized["rss_url"]
     try:
-        data = _http_get_json(url, timeout=15)
-        if data.get("code") != 0:
-            return []
-        results = data.get("data", {}).get("result", [])
-        accounts = []
-        for item in results:
-            if item.get("type") != "bili_user":
-                continue
-            mid = item.get("mid")
-            uname = item.get("uname", "")
-            if not mid:
-                continue
-            accounts.append({
-                "platform": "bilibili",
-                "name": uname,
-                "rss_url": f"/bilibili/user/dynamic/{mid}",
-                "mid": mid,
-                "fans": item.get("fans", ""),
-                "usign": item.get("usign", ""),
-            })
-        return accounts
+        if rss_url.startswith('/'):
+            feed_url = 'rsshub://' + rss_url.lstrip('/')
+            endpoint = 'https://api.folo.is/feeds?' + urllib.parse.urlencode({"url": feed_url})
+            payload = _http_get_json(endpoint, timeout=15)
+            feed = payload.get("data", {}).get("feed", {})
+            if feed:
+                normalized["name"] = normalized["name"] or str(feed.get("title", "")).split(' 的 ')[0]
+                normalized["profile_url"] = normalized["profile_url"] or str(feed.get("siteUrl", ""))
+                normalized["avatar"] = normalized["avatar"] or str(feed.get("image", ""))
+                normalized["feed_status"] = "healthy" if not feed.get("errorAt") else "degraded"
+                normalized["verified"] = True
+        elif rss_url.startswith(('http://', 'https://')):
+            body = urllib.request.urlopen(
+                urllib.request.Request(rss_url, headers={"User-Agent": "Mozilla/5.0 ElephBrain"}),
+                timeout=15,
+            ).read(4096).decode('utf-8', 'replace').lower()
+            if '<rss' in body or '<feed' in body:
+                normalized["feed_status"] = "healthy"
+                normalized["verified"] = True
     except Exception:
-        return []
+        if normalized["verified"]:
+            normalized["feed_status"] = "unavailable"
+    normalized["last_verified_at"] = int(time.time())
+    return normalized
+
+
+class BenchmarkPoolRequest(BaseModel):
+    account: dict
+
+
+class BilibiliSearchProvider:
+    platform = 'bilibili'
+
+    def search(self, keyword: str, page: int = 1, limit: int = 20,
+               sort: str = 'relevance', min_followers: int = 0) -> dict:
+        params = urllib.parse.urlencode({
+            "search_type": "bili_user",
+            "keyword": keyword,
+            "page": max(1, page),
+        })
+        data = _http_get_json(f"https://api.bilibili.com/x/web-interface/search/type?{params}", timeout=15)
+        if data.get("code") != 0:
+            raise RuntimeError(data.get("message") or 'B 站搜索失败')
+        body = data.get("data", {})
+        accounts = []
+        for item in body.get("result", []):
+            if item.get("type") != "bili_user" or not item.get("mid"):
+                continue
+            followers = int(item.get("fans", 0) or 0)
+            if followers < max(0, min_followers):
+                continue
+            mid = str(item["mid"])
+            avatar = str(item.get("upic", ""))
+            if avatar.startswith('//'):
+                avatar = 'https:' + avatar
+            accounts.append(_normalize_benchmark_account({
+                "platform": self.platform,
+                "identifier": mid,
+                "name": item.get("uname", ""),
+                "profile_url": f"https://space.bilibili.com/{mid}",
+                "rss_url": f"/bilibili/user/dynamic/{mid}",
+                "avatar": avatar,
+                "description": item.get("usign", ""),
+                "followers": followers,
+                "source": "bilibili_search",
+                "verified": True,
+                "feed_status": "unknown",
+                "last_verified_at": int(time.time()),
+            }))
+        if sort == 'followers':
+            accounts.sort(key=lambda item: item.get("followers") or 0, reverse=True)
+        return {
+            "results": accounts[:max(1, min(limit, 20))],
+            "page": int(body.get("page", page) or page),
+            "pages": int(body.get("numPages", 1) or 1),
+            "total": int(body.get("numResults", len(accounts)) or len(accounts)),
+        }
+
+
+_BENCHMARK_SEARCH_PROVIDERS = {"bilibili": BilibiliSearchProvider()}
+
+
+@app.get("/api/benchmarks/pool")
+async def api_benchmarks_pool(keyword: str = '', platform: str = '', page: int = 1,
+                              limit: int = 50, sort: str = 'relevance'):
+    accounts = _load_benchmark_pool()
+    query = keyword.strip().lower()
+    if platform:
+        accounts = [item for item in accounts if item["platform"] == platform]
+    if query:
+        accounts = [item for item in accounts if query in ' '.join([
+            item.get("name", ""), item.get("category", ""),
+            item.get("description", ""), *item.get("tags", []),
+        ]).lower()]
+    if sort == 'followers':
+        accounts.sort(key=lambda item: item.get("followers") or 0, reverse=True)
+    else:
+        accounts.sort(key=lambda item: (not item.get("verified"), item.get("name", "")))
+    page = max(1, page)
+    limit = max(1, min(limit, 100))
+    start = (page - 1) * limit
+    return {"accounts": accounts[start:start + limit], "page": page, "limit": limit,
+            "total": len(accounts)}
+
+
+@app.post("/api/benchmarks/pool")
+async def api_benchmarks_pool_add(req: BenchmarkPoolRequest):
+    try:
+        loop = asyncio.get_event_loop()
+        verified = await loop.run_in_executor(None, _verify_benchmark_account, req.account)
+        account = _upsert_benchmark_pool(verified)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    return {"account": account, "saved": True}
 
 
 @app.get("/api/benchmarks/search")
-async def api_benchmarks_search(keyword: str, platform: str = 'bilibili'):
-    """按关键词搜索平台账号（目前支持 bilibili）。"""
-    if not keyword.strip():
+async def api_benchmarks_search(keyword: str, platform: str = 'bilibili', page: int = 1,
+                                limit: int = 20, sort: str = 'relevance', min_followers: int = 0):
+    """按关键词搜索平台账号，并缓存上游搜索结果。"""
+    keyword = keyword.strip()
+    if not keyword:
         raise HTTPException(400, 'keyword 不能为空')
-    if platform != 'bilibili':
+    provider = _BENCHMARK_SEARCH_PROVIDERS.get(platform)
+    if not provider:
         raise HTTPException(400, f'暂不支持搜索平台：{platform}')
+    cache_key = (platform, keyword.lower(), max(1, page), max(1, min(limit, 20)),
+                 sort, max(0, min_followers))
+    cached = _BENCHMARK_SEARCH_CACHE.get(cache_key)
+    if cached and time.time() - cached[0] < 600:
+        return {"keyword": keyword, "platform": platform, **cached[1], "cached": True}
     loop = asyncio.get_event_loop()
-    results = await loop.run_in_executor(None, _search_bilibili_users, keyword.strip(), 1)
-    return {"keyword": keyword, "platform": platform, "results": results}
+    try:
+        result = await loop.run_in_executor(
+            None, provider.search, keyword, page, limit, sort, min_followers)
+    except Exception as error:
+        if cached:
+            return {"keyword": keyword, "platform": platform, **cached[1], "cached": True,
+                    "warning": f'上游搜索失败，正在显示缓存：{error}'}
+        raise HTTPException(502, f'B 站搜索失败：{error}') from error
+    _BENCHMARK_SEARCH_CACHE[cache_key] = (time.time(), result)
+    return {"keyword": keyword, "platform": platform, **result, "cached": False}
 
 
 SCHEDULE_FILE = OUTPUTS_DIR / "_schedule.json"

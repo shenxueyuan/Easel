@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   fetchBenchmarks, saveBenchmarks, fetchRsshubConfig, saveRsshubConfig,
   refreshBenchmarks, fetchBenchmarkPosts, fetchBenchmarkStatus, createIdea,
-  searchBenchmarks,
+  searchBenchmarks, fetchBenchmarkPool, addBenchmarkPoolAccount,
 } from '../lib/api';
 import type { BenchmarkAccount, BenchmarkGroup, BenchmarkPost, BenchmarkSearchResult } from '../lib/api';
 import type { Page } from './Sidebar';
@@ -11,7 +11,6 @@ import {
   IconTarget, IconPlus, IconTrash, IconRefresh, IconCheck, IconBookmark,
   IconEdit, IconChevron,
 } from './icons';
-import { BENCHMARK_POOL, type PoolAccount } from '../lib/benchmarkPool';
 import { parseProfileUrl } from '../lib/benchmarkUrl';
 
 interface BenchmarkPageProps {
@@ -67,6 +66,10 @@ function articleContent(post: BenchmarkPost): string {
   return post.content || post.summary || post.snippet || post.title;
 }
 
+function accountKey(account: BenchmarkAccount): string {
+  return account.id || `${account.platform}:${account.identifier || account.rss_url}`;
+}
+
 export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseTopic }: BenchmarkPageProps) {
   const [accounts, setAccounts] = useState<BenchmarkAccount[]>([]);
   const [keywords, setKeywords] = useState('');
@@ -83,6 +86,7 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
   const [selectedPlatform, setSelectedPlatform] = useState('all');
   const [selectedAccount, setSelectedAccount] = useState('');
   const [selectedPostKey, setSelectedPostKey] = useState('');
+  const [poolAccounts, setPoolAccounts] = useState<BenchmarkAccount[]>([]);
   const [poolQuery, setPoolQuery] = useState('');
   const [poolPlatform, setPoolPlatform] = useState('all');
   const [newLink, setNewLink] = useState('');
@@ -90,6 +94,9 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState('');
   const [searchResults, setSearchResults] = useState<BenchmarkSearchResult[]>([]);
+  const [searchPage, setSearchPage] = useState(1);
+  const [searchPages, setSearchPages] = useState(1);
+  const [minFollowers, setMinFollowers] = useState(0);
 
   const showToast = (message: string) => {
     setToast(message);
@@ -104,6 +111,7 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
         setAccounts(data.accounts || []);
         setKeywords(data.keywords || '');
       }).catch(() => {}) : Promise.resolve(),
+      fetchBenchmarkPool().then((data) => setPoolAccounts(data.accounts || [])).catch(() => {}),
     ]).finally(() => setLoading(false));
   }, [persona]);
 
@@ -149,13 +157,13 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
 
   const filteredPool = useMemo(() => {
     const q = poolQuery.trim().toLowerCase();
-    return BENCHMARK_POOL.filter((item) => {
+    return poolAccounts.filter((item) => {
       if (poolPlatform !== 'all' && item.platform !== poolPlatform) return false;
       if (!q) return true;
-      const text = `${item.name} ${item.category} ${item.tags.join(' ')} ${item.platform}`.toLowerCase();
+      const text = `${item.name} ${item.category || ''} ${(item.tags || []).join(' ')} ${item.platform}`.toLowerCase();
       return text.includes(q);
     });
-  }, [poolQuery, poolPlatform]);
+  }, [poolAccounts, poolQuery, poolPlatform]);
 
   useEffect(() => {
     if (feedPosts.length && !feedPosts.some((item) => item.key === selectedPostKey)) {
@@ -178,14 +186,27 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
     setAccounts((current) => [...current, { platform: 'weibo', name: '', rss_url: '' }]);
   };
 
-  const addFromPool = (item: PoolAccount) => {
-    setAccounts((current) => [...current, { platform: item.platform, name: item.name, rss_url: item.rss_url }]);
+  const appendAccount = (item: BenchmarkAccount) => {
+    if (accounts.some((account) => accountKey(account) === accountKey(item))) {
+      showToast('该账号已在当前画像中');
+      return;
+    }
+    setAccounts((current) => [...current, item]);
     showToast(`已添加 ${item.name}`);
   };
 
-  const addSearchResult = (item: BenchmarkSearchResult) => {
-    setAccounts((current) => [...current, { platform: item.platform, name: item.name, rss_url: item.rss_url }]);
-    showToast(`已添加 ${item.name}`);
+  const addFromPool = (item: BenchmarkAccount) => appendAccount(item);
+
+  const addSearchResult = async (item: BenchmarkSearchResult) => {
+    try {
+      const data = await addBenchmarkPoolAccount(item);
+      appendAccount(data.account);
+      setPoolAccounts((current) => current.some((account) => accountKey(account) === accountKey(data.account))
+        ? current.map((account) => accountKey(account) === accountKey(data.account) ? data.account : account)
+        : [...current, data.account]);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '账号验证和保存失败');
+    }
   };
 
   const handleNewLink = () => {
@@ -193,21 +214,22 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
     if (!url) return;
     const parsed = parseProfileUrl(url);
     if (parsed) {
-      setAccounts((current) => [...current, { platform: parsed.platform, name: parsed.name, rss_url: parsed.rss_url }]);
+      appendAccount({ ...parsed, source: 'link_resolve', verified: false, feed_status: 'unknown' });
       setNewLink('');
-      showToast(`已识别并添加 ${parsed.name}`);
     } else {
       showToast('无法识别该链接，请手动选择平台并填写');
     }
   };
 
-  const handleSearch = async () => {
+  const handleSearch = async (page = 1) => {
     if (!searchKeyword.trim()) return;
     setSearchLoading(true);
     setSearchError('');
     try {
-      const data = await searchBenchmarks(searchKeyword.trim(), 'bilibili');
+      const data = await searchBenchmarks(searchKeyword.trim(), 'bilibili', page, minFollowers);
       setSearchResults(data.results);
+      setSearchPage(data.page);
+      setSearchPages(data.pages);
       if (!data.results.length) showToast('未找到相关账号');
     } catch (error) {
       setSearchError(error instanceof Error ? error.message : '搜索失败');
@@ -217,17 +239,7 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
   };
 
   const loadExamples = () => {
-    setAccounts([
-      { platform: 'wechat', name: '机器之心', rss_url: 'https://wechat2rss.xlab.app/feed/51e92aad2728acdd1fda7314be32b16639353001.xml' },
-      { platform: 'weibo', name: '36氪', rss_url: 'https://rsshub.pseudoyu.com/weibo/user/1750070171' },
-      { platform: 'zhihu', name: '王晋东', rss_url: 'https://rsshub.top/zhihu/people/activities/jindongwang' },
-      { platform: 'bilibili', name: '影视飓风', rss_url: 'https://rss.peachyjoy.top/bilibili/user/video/946974' },
-      { platform: 'xiaohongshu', name: 'AI时间炼金师MetaX', rss_url: '/xiaohongshu/user/59f87643db2e602e550c9714/notes' },
-      { platform: 'douyin', name: '杜雨说AI', rss_url: '/douyin/user/MS4wLjABAAAALpAaN8biUOl9Z3VYzcKltEFdgvK5I2AeVD5bO8NC8IlysGEvUNZnw6A20jjuEpLd' },
-      { platform: 'toutiao', name: '赛文乔伊', rss_url: '/toutiao/user/token/MS4wLjABAAAA5z7a0VRwQxKYGNNShtjTD8vgAPVEC-lUzy294vSdAuw' },
-      { platform: '36kr', name: '36氪快讯', rss_url: 'https://rsshub.pseudoyu.com/36kr/newsflashes' },
-      { platform: 'custom', name: 'GitHub Blog', rss_url: 'https://github.blog/feed/' },
-    ]);
+    setAccounts(poolAccounts.slice(0, 9));
     setKeywords('AI, 大模型, LLM, 开源, Hugging Face');
   };
 
@@ -241,17 +253,21 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
       if (field === 'rss_url' && value.startsWith('http')) {
         const parsed = parseProfileUrl(value);
         if (parsed) {
-          return { ...account, platform: parsed.platform, name: account.name || parsed.name, rss_url: parsed.rss_url };
+          return { ...account, id: undefined, identifier: undefined, platform: parsed.platform,
+            name: account.name || parsed.name, rss_url: parsed.rss_url, verified: false, feed_status: 'unknown' };
         }
       }
-      return { ...account, [field]: value };
+      return { ...account, [field]: value, ...(field === 'rss_url' ? {
+        id: undefined, identifier: undefined, verified: false, feed_status: 'unknown',
+      } : {}) };
     }));
   };
 
   const onPlatformChange = (index: number, platform: string) => {
     const template = PLATFORM_TEMPLATES.find((item) => item.key === platform);
     setAccounts((current) => current.map((account, itemIndex) => itemIndex === index
-      ? { ...account, platform, rss_url: template?.route || '' }
+      ? { ...account, id: undefined, identifier: undefined, platform, rss_url: template?.route || '',
+        verified: false, feed_status: 'unknown' }
       : account));
   };
 
@@ -427,9 +443,16 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
                 onKeyDown={(event) => event.key === 'Enter' && handleSearch()}
                 placeholder="搜索 B 站 UP 主，如：影视飓风"
               />
+              <select className="field benchmark-platform" value={minFollowers}
+                onChange={(event) => setMinFollowers(Number(event.target.value))}>
+                <option value={0}>不限粉丝</option>
+                <option value={10000}>1 万以上</option>
+                <option value={100000}>10 万以上</option>
+                <option value={1000000}>100 万以上</option>
+              </select>
               <button
                 className="btn btn-primary"
-                onClick={handleSearch}
+                onClick={() => handleSearch(1)}
                 disabled={searchLoading || !searchKeyword.trim()}
               >
                 {searchLoading ? '搜索中…' : '搜索 B 站'}
@@ -437,16 +460,34 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
             </div>
             {searchError && <p style={{ color: '#ef4444', fontSize: 13, marginTop: -6, marginBottom: 8 }}>{searchError}</p>}
             {searchResults.length > 0 && (
-              <div className="benchmarks-list" style={{ maxHeight: 320, overflowY: 'auto' }}>
-                {searchResults.map((item) => (
-                  <div key={`search-${item.mid}`} className="benchmark-row">
-                    <span className="benchmark-platform" style={{ fontSize: 13 }}>{platformLabel(item.platform)}</span>
-                    <span className="benchmark-name" style={{ fontSize: 13 }}>{item.name}</span>
-                    <span className="benchmark-url" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>粉丝 {item.fans ?? '-'} · {item.usign || ''}</span>
-                    <button className="btn btn-sm btn-primary" onClick={() => addSearchResult(item)}>添加</button>
+              <>
+                <div className="benchmarks-list" style={{ maxHeight: 320, overflowY: 'auto' }}>
+                  {searchResults.map((item) => {
+                    const exists = accounts.some((account) => accountKey(account) === accountKey(item));
+                    return (
+                      <div key={`search-${accountKey(item)}`} className="benchmark-row">
+                        <span className="benchmark-platform" style={{ fontSize: 13 }}>{platformLabel(item.platform)}</span>
+                        <span className="benchmark-name" style={{ fontSize: 13 }}>{item.name}</span>
+                        <span className="benchmark-url" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                          粉丝 {item.followers?.toLocaleString('zh-CN') ?? '-'} · {item.description || ''}
+                        </span>
+                        <button className="btn btn-sm btn-primary" disabled={exists} onClick={() => addSearchResult(item)}>
+                          {exists ? '已添加' : '添加'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+                {searchPages > 1 && (
+                  <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8, marginTop: 10 }}>
+                    <button className="btn btn-sm" disabled={searchLoading || searchPage <= 1}
+                      onClick={() => handleSearch(searchPage - 1)}>上一页</button>
+                    <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{searchPage} / {searchPages}</span>
+                    <button className="btn btn-sm" disabled={searchLoading || searchPage >= searchPages}
+                      onClick={() => handleSearch(searchPage + 1)}>下一页</button>
                   </div>
-                ))}
-              </div>
+                )}
+              </>
             )}
           </section>
 
@@ -483,8 +524,14 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
                   <div key={`${item.platform}-${item.name}-${index}`} className="benchmark-row">
                     <span className="benchmark-platform" style={{ fontSize: 13 }}>{platformLabel(item.platform)}</span>
                     <span className="benchmark-name" style={{ fontSize: 13 }}>{item.name}</span>
-                    <span className="benchmark-url" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{item.category} · {item.tags.join(' / ')}</span>
-                    <button className="btn btn-sm btn-primary" onClick={() => addFromPool(item)}>添加</button>
+                    <span className="benchmark-url" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                      {item.category || '未分类'}{item.tags?.length ? ` · ${item.tags.join(' / ')}` : ''}
+                    </span>
+                    <button className="btn btn-sm btn-primary"
+                      disabled={accounts.some((account) => accountKey(account) === accountKey(item))}
+                      onClick={() => addFromPool(item)}>
+                      {accounts.some((account) => accountKey(account) === accountKey(item)) ? '已添加' : '添加'}
+                    </button>
                   </div>
                 ))}
               </div>

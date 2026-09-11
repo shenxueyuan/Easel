@@ -663,3 +663,52 @@ def test_raw_stream_parser_keeps_legacy_events_without_session_id():
         "event": "assistant_text_stream", "evtType": "text_delta", "delta": "兼容旧事件",
     })
     assert web._raw_event_for_session(legacy, "session-a")["delta"] == "兼容旧事件"
+
+
+def test_benchmark_account_normalizes_legacy_config():
+    account = web._normalize_benchmark_account({
+        "platform": "bilibili", "name": "影视飓风",
+        "rss_url": "/bilibili/user/dynamic/946974",
+    })
+    assert account["id"] == "bilibili:946974"
+    assert account["identifier"] == "946974"
+    assert account["feed_status"] == "unknown"
+
+
+def test_benchmark_accounts_are_deduplicated_by_platform_identifier():
+    accounts = web._dedupe_benchmark_accounts([
+        {"platform": "bilibili", "name": "旧名称", "rss_url": "/bilibili/user/dynamic/946974"},
+        {"platform": "bilibili", "name": "影视飓风", "rss_url": "/bilibili/user/dynamic/946974",
+         "followers": 100, "verified": True},
+    ])
+    assert len(accounts) == 1
+    assert accounts[0]["name"] == "影视飓风"
+    assert accounts[0]["followers"] == 100
+    assert accounts[0]["verified"] is True
+
+
+def test_benchmark_pool_initializes_and_persists(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "OUTPUTS_DIR", tmp_path)
+    monkeypatch.setattr(web, "BENCHMARK_POOL_FILE", tmp_path / "_benchmark_pool.json")
+    accounts = web._load_benchmark_pool()
+    assert any(item["id"] == "bilibili:946974" for item in accounts)
+    saved = web._upsert_benchmark_pool({
+        "platform": "bilibili", "identifier": "123", "name": "测试账号",
+        "rss_url": "/bilibili/user/dynamic/123", "verified": True,
+    })
+    assert saved["id"] == "bilibili:123"
+    assert any(item["id"] == "bilibili:123" for item in web._load_benchmark_pool())
+
+
+def test_bilibili_search_provider_returns_normalized_accounts(monkeypatch):
+    monkeypatch.setattr(web, "_http_get_json", lambda *args, **kwargs: {
+        "code": 0,
+        "data": {"page": 1, "numPages": 2, "numResults": 21, "result": [{
+            "type": "bili_user", "mid": 946974, "uname": "影视飓风",
+            "fans": 100, "usign": "无限进步", "upic": "//example.com/avatar.jpg",
+        }]},
+    })
+    result = web.BilibiliSearchProvider().search("影视", min_followers=50)
+    assert result["pages"] == 2
+    assert result["results"][0]["id"] == "bilibili:946974"
+    assert result["results"][0]["verified"] is True

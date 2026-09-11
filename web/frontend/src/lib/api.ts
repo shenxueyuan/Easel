@@ -202,7 +202,23 @@ export function fetchIndustryTrends(persona: string, limit = 20): Promise<{ indu
 }
 
 // ---- 对标账号监控 ----
-export interface BenchmarkAccount { platform: string; name: string; rss_url: string; }
+export interface BenchmarkAccount {
+  id?: string;
+  platform: string;
+  identifier?: string;
+  name: string;
+  profile_url?: string;
+  rss_url: string;
+  avatar?: string;
+  description?: string;
+  followers?: number | null;
+  category?: string;
+  tags?: string[];
+  source?: string;
+  verified?: boolean;
+  feed_status?: string;
+  last_verified_at?: number;
+}
 export interface BenchmarkConfig { accounts: BenchmarkAccount[]; keywords: string; }
 export interface BenchmarkPost { title: string; url: string; hot: string; snippet: string; summary?: string; content?: string; published_at?: string; source?: string; confidence?: string; }
 export interface BenchmarkGroup { platform: string; account: string; url: string; posts: BenchmarkPost[]; }
@@ -237,9 +253,24 @@ export function refreshBenchmarks(persona: string): Promise<{ started: boolean; 
 export function fetchBenchmarkStatus(persona: string): Promise<{ state: string; log: string }> {
   return request(`/api/benchmarks/status?persona=${encodeURIComponent(persona)}`);
 }
-export interface BenchmarkSearchResult { platform: string; name: string; rss_url: string; mid?: number; fans?: number; usign?: string; }
-export function searchBenchmarks(keyword: string, platform = 'bilibili'): Promise<{ keyword: string; platform: string; results: BenchmarkSearchResult[] }> {
-  return request(`/api/benchmarks/search?keyword=${encodeURIComponent(keyword)}&platform=${encodeURIComponent(platform)}`);
+export type BenchmarkSearchResult = BenchmarkAccount;
+export interface BenchmarkPoolResponse { accounts: BenchmarkAccount[]; page: number; limit: number; total: number; }
+export function fetchBenchmarkPool(keyword = '', platform = '', page = 1, limit = 100): Promise<BenchmarkPoolResponse> {
+  const params = new URLSearchParams({ keyword, platform, page: String(page), limit: String(limit) });
+  return request(`/api/benchmarks/pool?${params}`);
+}
+export function addBenchmarkPoolAccount(account: BenchmarkAccount): Promise<{ account: BenchmarkAccount; saved: boolean }> {
+  return request('/api/benchmarks/pool', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ account }),
+  });
+}
+export function searchBenchmarks(keyword: string, platform = 'bilibili', page = 1, minFollowers = 0): Promise<{
+  keyword: string; platform: string; results: BenchmarkSearchResult[]; page: number; pages: number; total: number; cached: boolean;
+}> {
+  const params = new URLSearchParams({ keyword, platform, page: String(page), min_followers: String(minFollowers) });
+  return request(`/api/benchmarks/search?${params}`);
 }
 
 // ---- 内容排期 ----
