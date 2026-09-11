@@ -237,6 +237,10 @@ export function refreshBenchmarks(persona: string): Promise<{ started: boolean; 
 export function fetchBenchmarkStatus(persona: string): Promise<{ state: string; log: string }> {
   return request(`/api/benchmarks/status?persona=${encodeURIComponent(persona)}`);
 }
+export interface BenchmarkSearchResult { platform: string; name: string; rss_url: string; mid?: number; fans?: number; usign?: string; }
+export function searchBenchmarks(keyword: string, platform = 'bilibili'): Promise<{ keyword: string; platform: string; results: BenchmarkSearchResult[] }> {
+  return request(`/api/benchmarks/search?keyword=${encodeURIComponent(keyword)}&platform=${encodeURIComponent(platform)}`);
+}
 
 // ---- 内容排期 ----
 export interface ScheduleItem {

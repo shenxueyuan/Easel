@@ -5469,6 +5469,47 @@ async def api_benchmarks_status(persona: str):
     return {"state": "unknown", "log": ""}
 
 
+def _search_bilibili_users(keyword: str, page: int = 1) -> list[dict]:
+    q = urllib.parse.quote(keyword)
+    url = f"https://api.bilibili.com/x/web-interface/search/type?search_type=bili_user&keyword={q}&page={page}"
+    try:
+        data = _http_get_json(url, timeout=15)
+        if data.get("code") != 0:
+            return []
+        results = data.get("data", {}).get("result", [])
+        accounts = []
+        for item in results:
+            if item.get("type") != "bili_user":
+                continue
+            mid = item.get("mid")
+            uname = item.get("uname", "")
+            if not mid:
+                continue
+            accounts.append({
+                "platform": "bilibili",
+                "name": uname,
+                "rss_url": f"/bilibili/user/dynamic/{mid}",
+                "mid": mid,
+                "fans": item.get("fans", ""),
+                "usign": item.get("usign", ""),
+            })
+        return accounts
+    except Exception:
+        return []
+
+
+@app.get("/api/benchmarks/search")
+async def api_benchmarks_search(keyword: str, platform: str = 'bilibili'):
+    """按关键词搜索平台账号（目前支持 bilibili）。"""
+    if not keyword.strip():
+        raise HTTPException(400, 'keyword 不能为空')
+    if platform != 'bilibili':
+        raise HTTPException(400, f'暂不支持搜索平台：{platform}')
+    loop = asyncio.get_event_loop()
+    results = await loop.run_in_executor(None, _search_bilibili_users, keyword.strip(), 1)
+    return {"keyword": keyword, "platform": platform, "results": results}
+
+
 SCHEDULE_FILE = OUTPUTS_DIR / "_schedule.json"
 SCHEDULE_STATUSES = {"idea", "draft", "scheduled", "published"}
 SCHEDULE_KINDS = {"content", "event"}

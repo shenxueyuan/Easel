@@ -2,8 +2,9 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   fetchBenchmarks, saveBenchmarks, fetchRsshubConfig, saveRsshubConfig,
   refreshBenchmarks, fetchBenchmarkPosts, fetchBenchmarkStatus, createIdea,
+  searchBenchmarks,
 } from '../lib/api';
-import type { BenchmarkAccount, BenchmarkGroup, BenchmarkPost } from '../lib/api';
+import type { BenchmarkAccount, BenchmarkGroup, BenchmarkPost, BenchmarkSearchResult } from '../lib/api';
 import type { Page } from './Sidebar';
 import { renderMarkdown } from '../lib/sanitize';
 import {
@@ -84,6 +85,11 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
   const [selectedPostKey, setSelectedPostKey] = useState('');
   const [poolQuery, setPoolQuery] = useState('');
   const [poolPlatform, setPoolPlatform] = useState('all');
+  const [newLink, setNewLink] = useState('');
+  const [searchKeyword, setSearchKeyword] = useState('');
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState('');
+  const [searchResults, setSearchResults] = useState<BenchmarkSearchResult[]>([]);
 
   const showToast = (message: string) => {
     setToast(message);
@@ -175,6 +181,39 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
   const addFromPool = (item: PoolAccount) => {
     setAccounts((current) => [...current, { platform: item.platform, name: item.name, rss_url: item.rss_url }]);
     showToast(`已添加 ${item.name}`);
+  };
+
+  const addSearchResult = (item: BenchmarkSearchResult) => {
+    setAccounts((current) => [...current, { platform: item.platform, name: item.name, rss_url: item.rss_url }]);
+    showToast(`已添加 ${item.name}`);
+  };
+
+  const handleNewLink = () => {
+    const url = newLink.trim();
+    if (!url) return;
+    const parsed = parseProfileUrl(url);
+    if (parsed) {
+      setAccounts((current) => [...current, { platform: parsed.platform, name: parsed.name, rss_url: parsed.rss_url }]);
+      setNewLink('');
+      showToast(`已识别并添加 ${parsed.name}`);
+    } else {
+      showToast('无法识别该链接，请手动选择平台并填写');
+    }
+  };
+
+  const handleSearch = async () => {
+    if (!searchKeyword.trim()) return;
+    setSearchLoading(true);
+    setSearchError('');
+    try {
+      const data = await searchBenchmarks(searchKeyword.trim(), 'bilibili');
+      setSearchResults(data.results);
+      if (!data.results.length) showToast('未找到相关账号');
+    } catch (error) {
+      setSearchError(error instanceof Error ? error.message : '搜索失败');
+    } finally {
+      setSearchLoading(false);
+    }
   };
 
   const loadExamples = () => {
@@ -327,6 +366,17 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
               </div>
             </div>
             <p className="benchmarks-section-desc">选择平台后填写 RSSHub 路由、完整 RSS 地址，或直接粘贴平台主页链接自动识别。</p>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+              <input
+                className="field"
+                style={{ flex: 1 }}
+                value={newLink}
+                onChange={(event) => setNewLink(event.target.value)}
+                onKeyDown={(event) => event.key === 'Enter' && handleNewLink()}
+                placeholder="粘贴 B 站/小红书/微博/知乎/抖音/头条主页链接，或公众号文章链接"
+              />
+              <button className="btn btn-primary" onClick={handleNewLink} disabled={!newLink.trim()}>识别添加</button>
+            </div>
 
             {loading ? (
               <div className="loading"><div className="spinner" />加载中…</div>
@@ -358,6 +408,44 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
                     </div>
                   );
                 })}
+              </div>
+            )}
+          </section>
+
+          <section className="card benchmark-settings-card">
+            <div className="benchmarks-section-head">
+              <h3 className="benchmarks-section-title">B 站在线搜索</h3>
+              <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>关键词搜索 B 站 UP 主</span>
+            </div>
+            <p className="benchmarks-section-desc">输入关键词搜索 B 站账号，点击“添加”加入当前画像。</p>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+              <input
+                className="field"
+                style={{ flex: 1 }}
+                value={searchKeyword}
+                onChange={(event) => setSearchKeyword(event.target.value)}
+                onKeyDown={(event) => event.key === 'Enter' && handleSearch()}
+                placeholder="搜索 B 站 UP 主，如：影视飓风"
+              />
+              <button
+                className="btn btn-primary"
+                onClick={handleSearch}
+                disabled={searchLoading || !searchKeyword.trim()}
+              >
+                {searchLoading ? '搜索中…' : '搜索 B 站'}
+              </button>
+            </div>
+            {searchError && <p style={{ color: '#ef4444', fontSize: 13, marginTop: -6, marginBottom: 8 }}>{searchError}</p>}
+            {searchResults.length > 0 && (
+              <div className="benchmarks-list" style={{ maxHeight: 320, overflowY: 'auto' }}>
+                {searchResults.map((item) => (
+                  <div key={`search-${item.mid}`} className="benchmark-row">
+                    <span className="benchmark-platform" style={{ fontSize: 13 }}>{platformLabel(item.platform)}</span>
+                    <span className="benchmark-name" style={{ fontSize: 13 }}>{item.name}</span>
+                    <span className="benchmark-url" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>粉丝 {item.fans ?? '-'} · {item.usign || ''}</span>
+                    <button className="btn btn-sm btn-primary" onClick={() => addSearchResult(item)}>添加</button>
+                  </div>
+                ))}
               </div>
             )}
           </section>

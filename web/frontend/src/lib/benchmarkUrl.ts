@@ -38,7 +38,7 @@ const PATTERNS: PlatformPattern[] = [
   },
   {
     platform: 'zhihu',
-    regex: /zhihu\.com\/people\/([^/?#]+)/,
+    regex: /zhihu\.com\/(?:people|org)\/([^/?#]+)/,
     route: (id) => `/zhihu/people/activities/${id}`,
     label: (id) => `知乎 ${id}`,
   },
@@ -53,6 +53,12 @@ const PATTERNS: PlatformPattern[] = [
     regex: /toutiao\.com\/c\/user\/token\/([^/?#]+)/,
     route: (id) => `/toutiao/user/token/${id}`,
     label: (id) => `头条 ${id.slice(0, 12)}`,
+  },
+  {
+    platform: 'wechat',
+    regex: /[?&]__biz=([^&?#]+)/,
+    route: (id) => `/wechat/mp/${id}`,
+    label: () => '公众号',
   },
 ];
 
