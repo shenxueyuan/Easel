@@ -1107,6 +1107,33 @@ async def api_chat_last(session_id: str, turn_id: str | None = None):
         return {"status": "none", "text": ""}
 
 
+@app.get("/api/sessions")
+async def api_sessions():
+    """把后端已落盘的会话同步到前端会话列表（localStorage 跨标签/跨浏览器不可见问题兜底）。"""
+    res = []
+    for p in SESSIONS_DIR.glob("web_*.json"):
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if data.get("status") != "done":
+                continue
+            sk = p.stem[4:]  # web_<sk>.json
+            text = data.get("text", "")
+            first_line = (text.split("\n")[0] if text else "").strip() or text.strip()
+            title = first_line[:24] or "新会话"
+            res.append({
+                "id": sk,
+                "title": title,
+                "persona": data.get("persona", ""),
+                "created_at": data.get("at", ""),
+                "lastText": text[:500],
+                "turn_id": data.get("turn_id", ""),
+            })
+        except Exception:
+            continue
+    res.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return {"sessions": res}
+
+
 @app.get("/api/chat/jobs/{turn_id}/stream")
 async def api_chat_job_stream(turn_id: str, after: int = 0):
     """Replay missed events, then tail this turn until its terminal event arrives."""
@@ -1493,6 +1520,7 @@ async def api_chat_stream(req: ChatRequest):
             # 落盘完整结果：后端跑完整轮不依赖客户端连接，断线后前端用 /api/chat/last 取回
             _save_turn(pk, "done", "".join(full_text), {
                 "turn_id": turn_id,
+                "persona": req.persona or "",
                 "clean_end": run_info.get("last_ev") == "assistant_message_end",
                 "stop_reason": "user_stopped" if user_stopped else run_info.get("stop_reason"),
             })

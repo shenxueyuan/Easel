@@ -18,7 +18,7 @@ import VoicePage from './components/VoicePage';
 import SubNav from './components/SubNav';
 import OnboardingWizard from './components/OnboardingWizard';
 import WelcomeGuide, { shouldShowWelcome } from './components/WelcomeGuide';
-import { fetchStatus, fetchPersonas, streamChat, fetchLastTurn, stopChat, resolvePublishDraft } from './lib/api';
+import { fetchStatus, fetchPersonas, fetchRemoteSessions, streamChat, fetchLastTurn, stopChat, resolvePublishDraft } from './lib/api';
 import type { PersonaItem, ThinkingMode, UploadedFile } from './lib/api';
 import { deleteSession as deleteRemoteSession } from './lib/api';
 import {
@@ -197,6 +197,32 @@ export default function App() {
       .catch(() => {
         setGatewayStatus('disconnected');
       });
+  }, []);
+
+  // 把后端已落盘会话合并到本地会话列表（测试/跨浏览器后也能看到历史对话）
+  useEffect(() => {
+    fetchRemoteSessions()
+      .then(({ sessions: remote }) => {
+        if (!remote.length) return;
+        setSessions((prev) => {
+          const localIds = new Set(prev.map((s) => s.id));
+          const added = remote
+            .filter((r) => !localIds.has(r.id))
+            .map((r) => ({
+              id: r.id,
+              title: r.title || '新会话',
+              messages: r.lastText ? [{ role: 'assistant' as const, content: r.lastText, thinking: '', activity: '' }] : [],
+              persona: r.persona || undefined,
+              created: r.created_at ? (new Date(r.created_at).getTime() || Date.now()) : Date.now(),
+              sessionKey: `web-${r.id}`,
+            }));
+          if (!added.length) return prev;
+          const next = [...added, ...prev];
+          saveSessions(next);
+          return next;
+        });
+      })
+      .catch(() => {});
   }, []);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId) || null;

@@ -147,6 +147,19 @@ export function fetchStatus(): Promise<StatusResponse> {
   return request<StatusResponse>('/api/status');
 }
 
+export interface RemoteSession {
+  id: string;
+  title: string;
+  persona: string;
+  created_at: string;
+  lastText: string;
+  turn_id: string;
+}
+
+export function fetchRemoteSessions(): Promise<{ sessions: RemoteSession[] }> {
+  return request<{ sessions: RemoteSession[] }>('/api/sessions');
+}
+
 export function fetchPersonas(): Promise<PersonaItem[]> {
   return request<PersonaItem[]>('/api/personas');
 }
