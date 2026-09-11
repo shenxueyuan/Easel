@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """benchmark_fetch.py — 对标账号内容抓取引擎（RSSHub 统一方案）。
 
-所有平台通过 RSSHub 生成 RSS feed，本脚本只负责解析 RSS。
-不再做平台特定的 HTML 抓取/搜索降级——那些逻辑不稳定且维护成本高。
+优先通过 RSSHub 或标准 RSS 获取内容；当平台账号路由受反爬影响时，
+使用 Playwright 读取公开账号页，确保手动刷新仍能获得可见内容。
 
 RSSHub 路由示例：
   公众号    /wechat/mp/:id              （需 NEWRANK_COOKIE 或 feeddd id）
@@ -11,7 +11,7 @@ RSSHub 路由示例：
   B站       /bilibili/user/dynamic/:uid
   抖音      /douyin/user/:uid
   小红书    /xiaohongshu/user/:user_id/notes
-  头条      /toutiao/user/:id
+  头条      /toutiao/user/token/:id
   36氪      /36kr/newsflashes
   虎嗅      /huxiu/article
   任意 RSS  直接填完整 URL
@@ -34,6 +34,7 @@ import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from html.parser import HTMLParser
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -58,6 +59,16 @@ def _http_get(url: str, timeout: int = 20) -> str:
     req = urllib.request.Request(url, headers=HEADERS)
     with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
         return r.read().decode("utf-8", "replace")
+
+
+def _http_get_page(url: str, timeout: int = 25) -> str:
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    headers = {**HEADERS, "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as response:
+        return response.read().decode("utf-8", "replace")
 
 
 def _resolve_url(rss_url: str, rsshub_base: str) -> str:
@@ -162,6 +173,212 @@ def parse_rss(xml_text: str, platform: str, account: str) -> list[dict]:
     return posts[:30]
 
 
+def _fetch_folo_cache(platform: str, account: str, rss_url: str) -> list[dict]:
+    if platform not in {"xiaohongshu", "bilibili"} or not rss_url.startswith("/"):
+        return []
+    feed_url = "rsshub://" + rss_url.lstrip("/")
+    endpoint = "https://api.folo.is/feeds?" + urllib.parse.urlencode({"url": feed_url})
+    try:
+        payload = json.loads(_http_get(endpoint, timeout=35))
+    except Exception as error:
+        print(f"Folo 缓存读取失败: {error}", file=sys.stderr)
+        return []
+    posts = []
+    for entry in payload.get("data", {}).get("entries", []):
+        title = (entry.get("title") or "").strip()
+        if not title:
+            continue
+        content = entry.get("content") or entry.get("description") or entry.get("summary") or title
+        published = entry.get("publishedAt") or ""
+        posts.append({
+            "title": title,
+            "url": entry.get("url") or "",
+            "summary": _strip_html(entry.get("description") or entry.get("summary") or ""),
+            "content": content[:5000],
+            "published_at": published,
+            "hot": "",
+            "snippet": _strip_html(entry.get("description") or "")[:120],
+            "source": f"Folo 缓存: {platform}/{account}",
+            "confidence": "medium",
+        })
+    return posts[:30]
+
+
+NATIVE_SOURCES = {
+    "weibo": (r"/weibo/user/([^/?]+)", "https://m.weibo.cn/u/{id}", 'a[href*="/status/"]'),
+    "zhihu": (r"/zhihu/people/(?:activities/)?([^/?]+)", "https://www.zhihu.com/people/{id}", 'a[href*="/p/"], a[href*="/question/"]'),
+    "bilibili": (r"/bilibili/user/(?:dynamic|video)/([^/?]+)", "https://space.bilibili.com/{id}/upload/video", 'a[href*="/video/"]'),
+    "douyin": (r"/douyin/user/([^/?]+)", "https://www.douyin.com/user/{id}", 'a[href*="/video/"]'),
+    "xiaohongshu": (r"/xiaohongshu/user/([^/?]+)", "https://www.xiaohongshu.com/user/profile/{id}", 'a[href*="/explore/"]'),
+    "toutiao": (r"/toutiao/user/(?:token/)?([^/?]+)", "https://www.toutiao.com/c/user/token/{id}/", 'a[href*="/article/"], a[href*="/video/"]'),
+}
+
+
+class _PublicLinkParser(HTMLParser):
+    def __init__(self, path_marker: str):
+        super().__init__()
+        self.path_marker = path_marker
+        self.links: list[dict] = []
+        self.current: dict | None = None
+        self.depth = 0
+        self.ignored = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"script", "style"}:
+            self.ignored += 1
+        if self.ignored:
+            return
+        values = dict(attrs)
+        href = values.get("href") or ""
+        if tag == "a" and self.path_marker in href and self.current is None:
+            self.current = {"url": urllib.parse.urljoin("https://www.xiaohongshu.com", href), "text": []}
+            self.depth = 1
+        elif self.current:
+            self.depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"script", "style"} and self.ignored:
+            self.ignored -= 1
+            return
+        if not self.current:
+            return
+        self.depth -= 1
+        if self.depth == 0:
+            text = re.sub(r"\s+", " ", " ".join(self.current["text"])).strip()
+            if text:
+                self.links.append({"title": text, "text": text, "url": self.current["url"]})
+            self.current = None
+
+    def handle_data(self, data: str) -> None:
+        if self.current and not self.ignored:
+            self.current["text"].append(data)
+
+
+def _fetch_xiaohongshu_html(page_url: str) -> list[dict]:
+    try:
+        html = _http_get_page(page_url, timeout=25)
+        state_match = re.search(r"window\.__INITIAL_STATE__\s*=\s*(\{.*?\})\s*</script>", html, re.S)
+        if state_match:
+            state = json.loads(re.sub(r"\bundefined\b", "null", state_match.group(1)))
+            items = []
+
+            def collect(value) -> None:
+                if isinstance(value, dict):
+                    note_id = value.get("noteId") or value.get("note_id")
+                    title = value.get("displayTitle") or value.get("title")
+                    if note_id and title:
+                        items.append({
+                            "title": str(title),
+                            "text": str(value.get("desc") or title),
+                            "url": f"https://www.xiaohongshu.com/explore/{note_id}",
+                        })
+                    for child in value.values():
+                        collect(child)
+                elif isinstance(value, list):
+                    for child in value:
+                        collect(child)
+
+            collect(state)
+            if items:
+                return items
+        parser = _PublicLinkParser("xsec_source=pc_user")
+        parser.feed(html)
+        return parser.links
+    except Exception as error:
+        print(f"小红书公开页解析失败: {error}", file=sys.stderr)
+        return []
+
+
+def _fetch_public_page(platform: str, account: str, rss_url: str) -> list[dict]:
+    source = NATIVE_SOURCES.get(platform)
+    if not source:
+        return []
+    pattern, homepage, selector = source
+    match = re.search(pattern, rss_url)
+    if not match:
+        return []
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        print("Playwright 未安装，跳过公开页降级", file=sys.stderr)
+        return []
+
+    page_url = homepage.format(id=match.group(1))
+    print(f"降级抓取公开页: {page_url}", file=sys.stderr)
+    try:
+        if platform == "xiaohongshu":
+            raw_items = _fetch_xiaohongshu_html(page_url)
+        else:
+            api_items: list[dict] = []
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
+                page = browser.new_page(user_agent=HEADERS["User-Agent"], locale="zh-CN")
+
+                def capture_response(response) -> None:
+                    if (platform != "douyin" or "/aweme/post/" not in response.url
+                            or match.group(1) not in response.url):
+                        return
+                    try:
+                        payload = response.json()
+                        for aweme in payload.get("aweme_list", []):
+                            author = aweme.get("author", {}).get("nickname", "")
+                            if author and account.lower() not in author.lower() and author.lower() not in account.lower():
+                                continue
+                            description = aweme.get("desc", "").strip()
+                            aweme_id = aweme.get("aweme_id", "")
+                            if description and aweme_id:
+                                api_items.append({
+                                    "title": description,
+                                    "text": description,
+                                    "url": f"https://www.douyin.com/video/{aweme_id}",
+                                    "published_at": str(aweme.get("create_time", "")),
+                                })
+                    except Exception:
+                        pass
+
+                page.on("response", capture_response)
+                page.goto(page_url, wait_until="domcontentloaded", timeout=45_000)
+                page.wait_for_timeout(7_000)
+                raw_items = api_items if platform == "douyin" else page.locator(selector).evaluate_all("""
+                    (links) => links.slice(0, 80).map((link) => {
+                        const wrapper = link.closest('article, section, li, [class*=card], [class*=item]') || link.parentElement;
+                        const text = (wrapper?.innerText || link.innerText || '').replace(/\\s+/g, ' ').trim();
+                        const title = link.getAttribute('title') || link.getAttribute('aria-label') || link.innerText?.trim() || text;
+                        return { title, url: link.href, text };
+                    })
+                """)
+                browser.close()
+    except Exception as error:
+        print(f"公开页抓取失败: {error}", file=sys.stderr)
+        return []
+
+    posts = []
+    seen = set()
+    for item in raw_items:
+        url = item.get("url", "").split("?")[0]
+        title = re.sub(r"\s+", " ", item.get("title", "")).strip()
+        text = re.sub(r"\s+", " ", item.get("text", "")).strip()
+        if len(title) < 4 or len(title) > 180:
+            title = text[:180]
+        dedupe_key = title if platform == "xiaohongshu" else url
+        if not title or len(title) < 4 or dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        summary = text if text != title and len(text) >= 20 else ""
+        posts.append({
+            "title": title[:180],
+            "url": url,
+            "summary": summary[:600],
+            "content": summary[:5000] or title[:180],
+            "published_at": item.get("published_at") or str(int(time.time())),
+            "hot": "",
+            "snippet": summary[:120],
+            "source": f"公开页: {platform}/{account}",
+            "confidence": "medium",
+        })
+    return posts[:30]
+
+
 def fetch_account(persona: str, platform: str, name: str, rss_url: str,
                    rsshub_base: str = DEFAULT_RSSHUB) -> list[dict]:
     """通过 RSS feed 抓取单个对标账号的最新内容。"""
@@ -172,33 +389,42 @@ def fetch_account(persona: str, platform: str, name: str, rss_url: str,
     url = _resolve_url(rss_url, rsshub_base)
     print(f"抓取 RSS: {url}", file=sys.stderr)
 
+    error = ""
     try:
-        xml_text = _http_get(url, timeout=25)
-    except Exception as e:
-        print(f"RSS 请求失败: {e}", file=sys.stderr)
-        # 保存空结果但记录错误
-        account_dir = BENCHMARKS_DIR / persona / f"{platform}_{name}"
-        account_dir.mkdir(parents=True, exist_ok=True)
-        (account_dir / "posts.json").write_text("[]", encoding="utf-8")
-        (account_dir / "meta.json").write_text(
-            json.dumps({"platform": platform, "name": name, "rss_url": rss_url,
-                        "resolved_url": url, "fetched_at": int(time.time()),
-                        "error": str(e)}, ensure_ascii=False, indent=2),
-            encoding="utf-8")
-        return []
+        xml_text = _http_get(url, timeout=45)
+        posts = parse_rss(xml_text, platform, name)
+    except Exception as exc:
+        error = str(exc)
+        print(f"RSS 请求失败: {exc}", file=sys.stderr)
+        posts = []
 
-    posts = parse_rss(xml_text, platform, name)
+    source_type = "rss"
+    if not posts:
+        posts = _fetch_folo_cache(platform, name, rss_url)
+        source_type = "folo_cache" if posts else "failed"
+    if not posts:
+        posts = _fetch_public_page(platform, name, rss_url)
+        source_type = "public_page" if posts else "failed"
 
     # 保存
     account_dir = BENCHMARKS_DIR / persona / f"{platform}_{name}"
     account_dir.mkdir(parents=True, exist_ok=True)
+    posts_file = account_dir / "posts.json"
+    if not posts and posts_file.is_file():
+        try:
+            posts = json.loads(posts_file.read_text(encoding="utf-8"))
+            if posts:
+                source_type = "stale_cache"
+        except Exception:
+            pass
     (account_dir / "posts.json").write_text(
         json.dumps(posts, ensure_ascii=False, indent=2), encoding="utf-8")
+    meta = {"platform": platform, "name": name, "rss_url": rss_url,
+            "resolved_url": url, "fetched_at": int(time.time()), "source_type": source_type}
+    if error and not posts:
+        meta["error"] = error
     (account_dir / "meta.json").write_text(
-        json.dumps({"platform": platform, "name": name, "rss_url": rss_url,
-                     "resolved_url": url, "fetched_at": int(time.time())},
-                    ensure_ascii=False, indent=2),
-        encoding="utf-8")
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return posts
 
 

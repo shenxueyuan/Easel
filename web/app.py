@@ -5225,6 +5225,10 @@ async def api_benchmarks_posts(persona: str):
     bd = BENCHMARKS_DIR / persona
     if not bd.is_dir():
         return {"groups": [], "last_fetch": 0}
+    configured = {
+        (account.get("platform", ""), account.get("name", ""))
+        for account in _load_benchmarks_config(persona).get("accounts", [])
+    }
     groups = []
     for account_dir in sorted(bd.iterdir()):
         if not account_dir.is_dir() or account_dir.name.startswith('_'):
@@ -5243,10 +5247,14 @@ async def api_benchmarks_posts(persona: str):
                 meta = json.loads(meta_file.read_text(encoding='utf-8'))
             except Exception:
                 pass
+        platform = meta.get("platform", "")
+        account = meta.get("name", account_dir.name)
+        if (platform, account) not in configured:
+            continue
         groups.append({
-            "platform": meta.get("platform", ""),
-            "account": meta.get("name", account_dir.name),
-            "url": meta.get("url", ""),
+            "platform": platform,
+            "account": account,
+            "url": meta.get("rss_url", meta.get("url", "")),
             "posts": posts[:20],
         })
     lf = bd / "last_fetch.json"
@@ -5290,7 +5298,7 @@ async def api_benchmarks_refresh(persona: str):
                          "--name", name,
                          "--rss-url", rss_url,
                          "--rsshub", rsshub_url],
-                        capture_output=True, timeout=60,
+                        capture_output=True, timeout=90,
                         cwd=str(PROJECT_ROOT),
                     )
                 except Exception:
