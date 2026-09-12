@@ -214,14 +214,17 @@ def _goto(page, url: str) -> None:
 
 
 def _wait_for_login(page, platform: str, cfg: dict, timeout: int = 600) -> str:
-    """检测到登录态时，保持浏览器打开等待用户登录，轮询登录状态。
-    返回 'ready'（登录成功）、'blocked'（风控）或 'timeout'（超时）。"""
+    """检测到需要登录/验证码时，保持浏览器打开等待用户处理，轮询状态。
+    返回 'ready'（已登录/验证通过）、'blocked'（真正风控）或 'timeout'（超时）。"""
     deadline = time.time() + max(30, min(timeout, 600))
     while time.time() < deadline:
         text = _text(page)
         state = _page_state(platform, text, page.url, False)
+        # 只有真正的 IP 风控才返回 blocked
         if state == "blocked":
             return "blocked"
+        # login_required 表示需要用户操作（登录/验证码），继续等待
+        # done 表示用户已处理完成
         if state != "login_required":
             return "ready"
         page.wait_for_timeout(2000)
@@ -234,8 +237,12 @@ def _login_required(platform: str, text: str) -> bool:
 
 def _page_state(platform: str, text: str, url: str, has_results: bool) -> str:
     cfg = PLATFORMS[platform]
-    if "website-login/error" in url or "antispider" in url or "error_code=" in url or re.search(r"IP存在风险|访问频繁|安全验证|环境异常|验证码中间页", text):
+    # 真正的风控（无法手动处理）：IP 风险、antispider 页面
+    if "antispider" in url or re.search(r"IP存在风险|环境异常", text):
         return "blocked"
+    # 需要用户操作的页面：验证码中间页、登录页（用户可扫码/输入验证码/登录）
+    if "website-login/error" in url or "error_code=" in url or re.search(r"验证码中间页|安全验证|访问频繁", text):
+        return "login_required"
     for marker in cfg.get("blocked_text", []):
         if marker in text:
             return "blocked"
@@ -364,11 +371,11 @@ def search(platform: str, keyword: str, limit: int, headed: bool) -> dict:
         page.on("response", on_response)
         try:
             url = cfg["search"].format(keyword=urllib.parse.quote(keyword))
-            # 小红书直接访问搜索页会超时，需要先访问首页建立 session
-            if platform == "xiaohongshu":
+            # 需要登录的平台先访问首页建立 session，避免直接访问搜索页触发风控
+            if platform in ("xiaohongshu", "douyin", "kuaishou"):
                 try:
-                    _goto(page, cfg.get("home", "https://www.xiaohongshu.com/explore"))
-                    page.wait_for_timeout(1500)
+                    _goto(page, cfg.get("home", ""))
+                    page.wait_for_timeout(2000)
                 except Exception:
                     pass
             try:
