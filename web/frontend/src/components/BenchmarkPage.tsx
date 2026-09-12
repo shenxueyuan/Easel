@@ -510,27 +510,46 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
               </div>
             ) : (
               <div className="benchmarks-list">
-                {accounts.map((account, index) => {
-                  const template = PLATFORM_TEMPLATES.find((item) => item.key === account.platform);
-                  return (
-                    <div key={`${account.platform}-${index}`} className="benchmark-row">
-                      <select className="field benchmark-platform" value={account.platform}
-                        onChange={(event) => onPlatformChange(index, event.target.value)}>
-                        {PLATFORM_TEMPLATES.map((platform) => (
-                          <option key={platform.key} value={platform.key}>{platform.label}</option>
-                        ))}
-                      </select>
-                      <input className="field benchmark-name" value={account.name} placeholder="账号名称"
-                        onChange={(event) => updateAccount(index, 'name', event.target.value)} />
-                      <input className="field benchmark-url" value={account.rss_url}
-                        placeholder={template?.placeholder || 'RSS URL 或 RSSHub 路由'}
-                        onChange={(event) => updateAccount(index, 'rss_url', event.target.value)} />
-                      <button className="btn btn-sm benchmark-delete" onClick={() => removeAccount(index)} title="删除">
-                        <IconTrash size={14} />
-                      </button>
+                {(() => {
+                  // 按平台分组展示
+                  const groups: Record<string, number[]> = {};
+                  accounts.forEach((account, index) => {
+                    const p = account.platform || 'custom';
+                    if (!groups[p]) groups[p] = [];
+                    groups[p].push(index);
+                  });
+                  return Object.entries(groups).map(([platform, indices]) => (
+                    <div key={platform} className="benchmark-platform-group">
+                      <div className="benchmark-platform-group-header">
+                        <span className={`benchmark-platform-dot platform-${platform}`}>{platformMark(platform)}</span>
+                        <span className="benchmark-platform-group-title">{platformLabel(platform)}</span>
+                        <span className="benchmark-platform-group-count">{indices.length}</span>
+                      </div>
+                      {indices.map((index) => {
+                        const account = accounts[index];
+                        const template = PLATFORM_TEMPLATES.find((item) => item.key === account.platform);
+                        return (
+                          <div key={`${account.platform}-${index}`} className="benchmark-row">
+                            <select className="field benchmark-platform" value={account.platform}
+                              onChange={(event) => onPlatformChange(index, event.target.value)}>
+                              {PLATFORM_TEMPLATES.map((platform) => (
+                                <option key={platform.key} value={platform.key}>{platform.label}</option>
+                              ))}
+                            </select>
+                            <input className="field benchmark-name" value={account.name} placeholder="账号名称"
+                              onChange={(event) => updateAccount(index, 'name', event.target.value)} />
+                            <input className="field benchmark-url" value={account.rss_url}
+                              placeholder={template?.placeholder || 'RSS URL 或 RSSHub 路由'}
+                              onChange={(event) => updateAccount(index, 'rss_url', event.target.value)} />
+                            <button className="btn btn-sm benchmark-delete" onClick={() => removeAccount(index)} title="删除">
+                              <IconTrash size={14} />
+                            </button>
+                          </div>
+                        );
+                      })}
                     </div>
-                  );
-                })}
+                  ));
+                })()}
               </div>
             )}
           </section>

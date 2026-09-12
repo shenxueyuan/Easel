@@ -5791,7 +5791,7 @@ async def api_benchmarks_pool_add(req: BenchmarkPoolRequest):
 
 _BENCHMARK_AVATAR_HOSTS = {
     "hdslb.com", "xhscdn.com", "douyinpic.com", "sinaimg.cn", "zhimg.com",
-    "toutiaoimg.com", "byteimg.com", "kwaicdn.com", "kwimgs.com",
+    "toutiaoimg.com", "byteimg.com", "byteacctimg.com", "kwaicdn.com", "kwimgs.com",
 }
 _BENCHMARK_AVATAR_CACHE: dict[str, tuple[float, bytes, str]] = {}
 
