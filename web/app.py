@@ -5302,6 +5302,7 @@ def _benchmark_identifier(platform: str, rss_url: str, explicit: str = '') -> st
         "douyin": r"/douyin/user/([^/?]+)",
         "toutiao": r"/toutiao/user/(?:token/)?([^/?]+)",
         "wechat": r"/wechat/mp/([^/?]+)",
+        "kuaishou": r"kuaishou\.com/profile/([^/?]+)",
     }
     match = re.search(patterns.get(platform, r"$^"), rss_url)
     if match:
@@ -5611,7 +5612,9 @@ def _verify_benchmark_account(account: dict) -> dict:
             payload = _http_get_json(endpoint, timeout=15)
             feed = payload.get("data", {}).get("feed", {})
             if feed:
-                normalized["name"] = normalized["name"] or str(feed.get("title", "")).split(' 的 ')[0]
+                feed_name = str(feed.get("title", "")).split(' 的 ')[0].strip()
+                if feed_name and (not normalized["name"] or normalized["source"] == "link_resolve"):
+                    normalized["name"] = feed_name
                 normalized["profile_url"] = normalized["profile_url"] or str(feed.get("siteUrl", ""))
                 normalized["avatar"] = normalized["avatar"] or str(feed.get("image", ""))
                 normalized["feed_status"] = "healthy" if not feed.get("errorAt") else "degraded"
@@ -5635,6 +5638,16 @@ class BenchmarkPoolRequest(BaseModel):
     account: dict
 
 
+def _bilibili_search_json(url: str) -> dict:
+    request = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+        "Referer": "https://search.bilibili.com/",
+        "Accept": "application/json, text/plain, */*",
+    })
+    with urllib.request.urlopen(request, timeout=15) as response:
+        return json.loads(response.read().decode('utf-8', 'replace'))
+
+
 class BilibiliSearchProvider:
     platform = 'bilibili'
 
@@ -5645,7 +5658,8 @@ class BilibiliSearchProvider:
             "keyword": keyword,
             "page": max(1, page),
         })
-        data = _http_get_json(f"https://api.bilibili.com/x/web-interface/search/type?{params}", timeout=15)
+        url = f"https://api.bilibili.com/x/web-interface/search/type?{params}"
+        data = _bilibili_search_json(url)
         if data.get("code") != 0:
             raise RuntimeError(data.get("message") or 'B 站搜索失败')
         body = data.get("data", {})
@@ -5682,6 +5696,25 @@ class BilibiliSearchProvider:
             "pages": int(body.get("numPages", 1) or 1),
             "total": int(body.get("numResults", len(accounts)) or len(accounts)),
         }
+
+
+def _search_bilibili_browser_fallback(keyword: str, limit: int, min_followers: int) -> dict:
+    script = PROJECT_ROOT / "skills" / "shared" / "scripts" / "browser_account_search.py"
+    completed = subprocess.run(
+        [sys.executable, str(script), "search", "--platform", "bilibili",
+         "--keyword", keyword, "--limit", str(max(1, min(limit, 50)))],
+        cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=60,
+    )
+    lines = [line for line in completed.stdout.splitlines() if line.strip()]
+    payload = json.loads(lines[-1]) if lines else {}
+    if completed.returncode != 0:
+        raise RuntimeError(payload.get("error") or completed.stderr.strip() or 'B 站浏览器搜索失败')
+    accounts = [
+        _normalize_benchmark_account(item) for item in payload.get("results", [])
+        if (item.get("followers") or 0) >= max(0, min_followers)
+    ]
+    return {"results": accounts, "page": 1, "pages": 1, "total": len(accounts),
+            "fallback": "browser"}
 
 
 _BENCHMARK_SEARCH_PROVIDERS = {"bilibili": BilibiliSearchProvider()}
@@ -5721,6 +5754,46 @@ async def api_benchmarks_pool_add(req: BenchmarkPoolRequest):
     return {"account": account, "saved": True}
 
 
+_BENCHMARK_AVATAR_HOSTS = {
+    "hdslb.com", "xhscdn.com", "douyinpic.com", "sinaimg.cn", "zhimg.com",
+    "toutiaoimg.com", "byteimg.com", "kwaicdn.com", "kwimgs.com",
+}
+_BENCHMARK_AVATAR_CACHE: dict[str, tuple[float, bytes, str]] = {}
+
+
+def _fetch_benchmark_avatar(url: str) -> tuple[bytes, str]:
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or '').lower().rstrip('.')
+    if parsed.scheme != 'https' or not any(host == item or host.endswith('.' + item) for item in _BENCHMARK_AVATAR_HOSTS):
+        raise ValueError('头像地址不受支持')
+    cached = _BENCHMARK_AVATAR_CACHE.get(url)
+    if cached and time.time() - cached[0] < 86400:
+        return cached[1], cached[2]
+    request = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+        "Referer": "https://www.bilibili.com/" if host.endswith('hdslb.com') else f"https://{host}/",
+    })
+    with urllib.request.urlopen(request, timeout=15) as response:
+        content_type = response.headers.get_content_type()
+        content = response.read(2_000_001)
+    if not content_type.startswith('image/') or len(content) > 2_000_000:
+        raise ValueError('头像响应不是有效图片')
+    _BENCHMARK_AVATAR_CACHE[url] = (time.time(), content, content_type)
+    return content, content_type
+
+
+@app.get("/api/benchmarks/avatar")
+async def api_benchmarks_avatar(url: str):
+    loop = asyncio.get_event_loop()
+    try:
+        content, content_type = await loop.run_in_executor(None, _fetch_benchmark_avatar, url)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    except Exception as error:
+        raise HTTPException(502, f'头像加载失败：{error}') from error
+    return Response(content=content, media_type=content_type, headers={"Cache-Control": "public, max-age=86400"})
+
+
 @app.get("/api/benchmarks/search")
 async def api_benchmarks_search(keyword: str, platform: str = 'bilibili', page: int = 1,
                                 limit: int = 20, sort: str = 'relevance', min_followers: int = 0):
@@ -5744,9 +5817,241 @@ async def api_benchmarks_search(keyword: str, platform: str = 'bilibili', page: 
         if cached:
             return {"keyword": keyword, "platform": platform, **cached[1], "cached": True,
                     "warning": f'上游搜索失败，正在显示缓存：{error}'}
-        raise HTTPException(502, f'B 站搜索失败：{error}') from error
+        try:
+            result = await loop.run_in_executor(
+                None, _search_bilibili_browser_fallback, keyword, limit, min_followers)
+            result["warning"] = f'B 站接口受限，已切换浏览器搜索：{error}'
+        except Exception as fallback_error:
+            raise HTTPException(502, f'B 站搜索失败：{fallback_error}') from fallback_error
     _BENCHMARK_SEARCH_CACHE[cache_key] = (time.time(), result)
     return {"keyword": keyword, "platform": platform, **result, "cached": False}
+
+
+_BENCHMARK_RESOLVE_PATTERNS = [
+    ("xiaohongshu", r"xiaohongshu\.com/user/profile/([^/?#]+)", "/xiaohongshu/user/{id}/notes", "小红书"),
+    ("douyin", r"douyin\.com/user/([0-9a-zA-Z_-]+)", "/douyin/user/{id}", "抖音"),
+    ("bilibili", r"(?:space\.bilibili\.com/|m\.bilibili\.com/space/)([0-9]+)", "/bilibili/user/dynamic/{id}", "B站"),
+    ("weibo", r"(?:weibo\.com/u/|m\.weibo\.cn/u/)([0-9]+)", "/weibo/user/{id}", "微博"),
+    ("zhihu", r"zhihu\.com/(?:people|org)/([^/?#]+)", "/zhihu/people/activities/{id}", "知乎"),
+    ("toutiao", r"toutiao\.com/c/user/token/([^/?#]+)", "/toutiao/user/token/{id}", "头条"),
+    ("kuaishou", r"kuaishou\.com/profile/([^/?#]+)", "{url}", "快手"),
+]
+_BENCHMARK_ALLOWED_HOSTS = {
+    "xiaohongshu.com", "xhslink.com", "douyin.com", "iesdouyin.com", "bilibili.com", "b23.tv",
+    "weibo.com", "weibo.cn", "zhihu.com", "toutiao.com", "kuaishou.com", "mp.weixin.qq.com",
+}
+
+
+class BenchmarkResolveRequest(BaseModel):
+    input: str
+
+
+def _benchmark_allowed_host(hostname: str) -> bool:
+    host = hostname.lower().rstrip('.')
+    return any(host == allowed or host.endswith('.' + allowed) for allowed in _BENCHMARK_ALLOWED_HOSTS)
+
+
+class _BenchmarkRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        parsed = urllib.parse.urlparse(newurl)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or not _benchmark_allowed_host(parsed.hostname):
+            raise ValueError('链接重定向到了不受支持的地址')
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _resolve_benchmark_input(value: str) -> dict:
+    match = re.search(r"https?://[^\s<>\"']+", value.strip())
+    if not match:
+        raise ValueError('没有找到可识别的网页链接')
+    url = match.group(0).rstrip('。，、；;！!）)]}')
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or not _benchmark_allowed_host(parsed.hostname):
+        raise ValueError('暂不支持该链接所属的平台')
+    body = ''
+    short_hosts = {"xhslink.com", "v.douyin.com", "b23.tv"}
+    if parsed.hostname.lower() in short_hosts or parsed.hostname.lower().endswith(tuple('.' + host for host in short_hosts)):
+        opener = urllib.request.build_opener(_BenchmarkRedirectHandler())
+        response = opener.open(urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"}), timeout=15)
+        url = response.geturl()
+        body = response.read(512_000).decode('utf-8', 'replace')
+    for platform, pattern, route, label in _BENCHMARK_RESOLVE_PATTERNS:
+        found = re.search(pattern, url)
+        if found:
+            identifier = urllib.parse.unquote(found.group(1))
+            rss_url = url.split('?')[0] if route == "{url}" else route.format(id=identifier)
+            return _normalize_benchmark_account({
+                "platform": platform, "identifier": identifier,
+                "name": f"{label} {identifier[:12]}", "profile_url": url,
+                "rss_url": rss_url, "source": "link_resolve", "verified": False,
+            })
+    if 'mp.weixin.qq.com' in parsed.hostname:
+        query_biz = (urllib.parse.parse_qs(parsed.query).get('__biz') or [''])[0]
+        if not query_biz and not body:
+            opener = urllib.request.build_opener(_BenchmarkRedirectHandler())
+            response = opener.open(urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"}), timeout=15)
+            body = response.read(1_000_000).decode('utf-8', 'replace')
+            url = response.geturl()
+        biz_match = re.search(r'(?:__biz["\']?\s*[:=]\s*["\']|[?&]__biz=)([^&"\']+)', body + '\n' + url)
+        if not query_biz and not biz_match:
+            raise ValueError('已识别公众号文章，但未能提取公众号 __biz')
+        identifier = urllib.parse.unquote(query_biz or biz_match.group(1)).replace('\\x3d', '=').strip()
+        name_match = re.search(r'<strong[^>]*class="profile_nickname"[^>]*>(.*?)</strong>|var\s+nickname\s*=\s*["\']([^"\']+)', body, re.S)
+        name = re.sub(r'<[^>]+>', '', next((group for group in name_match.groups() if group), '公众号')).strip() if name_match else '公众号'
+        return _normalize_benchmark_account({
+            "platform": "wechat", "identifier": identifier, "name": name,
+            "profile_url": url, "rss_url": f"/wechat/mp/{identifier}",
+            "source": "wechat_article_resolve", "verified": False,
+        })
+    raise ValueError('链接格式已识别，但暂时无法提取账号标识')
+
+
+@app.post("/api/benchmarks/resolve")
+async def api_benchmarks_resolve(req: BenchmarkResolveRequest):
+    loop = asyncio.get_event_loop()
+    try:
+        account = await loop.run_in_executor(None, _resolve_benchmark_input, req.input)
+        account = await loop.run_in_executor(None, _verify_benchmark_account, account)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    except Exception as error:
+        raise HTTPException(502, f'链接识别失败：{error}') from error
+    return {"account": account}
+
+
+_BROWSER_BENCHMARK_PLATFORMS = {
+    "xiaohongshu": "XiaohongshuProfile", "douyin": "DouyinProfile",
+    "bilibili": "BilibiliProfile", "weibo": "WeiboProfile", "zhihu": "ZhihuProfile",
+    "toutiao": "ToutiaoProfile", "wechat": "WechatProfile", "kuaishou": "KuaishouProfile",
+    "36kr": "Kr36Profile",
+}
+_BROWSER_BENCHMARK_HOSTS = {
+    "xiaohongshu": "xiaohongshu.com", "douyin": "douyin.com", "bilibili": "bilibili.com",
+    "weibo": "weibo.com", "zhihu": "zhihu.com", "toutiao": "toutiao.com",
+    "wechat": "mp.weixin.qq.com", "kuaishou": "kuaishou.com", "36kr": "36kr.com",
+}
+_BROWSER_BENCHMARK_JOBS: dict[str, dict] = {}
+_BROWSER_BENCHMARK_JOBS_LOCK = threading.Lock()
+
+
+class BrowserBenchmarkSearchRequest(BaseModel):
+    platform: str
+    keyword: str
+    limit: int = 20
+
+
+class BrowserBenchmarkProfileRequest(BaseModel):
+    platform: str
+    url: str
+    limit: int = 30
+
+
+class BrowserBenchmarkLoginRequest(BaseModel):
+    platform: str
+    wait: int = 180
+
+
+def _run_browser_benchmark_job(job_id: str, args: list[str], timeout: int) -> None:
+    script = PROJECT_ROOT / "skills" / "shared" / "scripts" / "browser_account_search.py"
+    with _BROWSER_BENCHMARK_JOBS_LOCK:
+        _BROWSER_BENCHMARK_JOBS[job_id]["state"] = "running"
+        _BROWSER_BENCHMARK_JOBS[job_id]["updated_at"] = int(time.time())
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(script), *args], cwd=str(PROJECT_ROOT),
+            capture_output=True, text=True, timeout=timeout,
+        )
+        lines = [line for line in completed.stdout.splitlines() if line.strip()]
+        payload = json.loads(lines[-1]) if lines else {}
+        if completed.returncode != 0:
+            raise RuntimeError(payload.get("error") or completed.stderr.strip() or '浏览器任务失败')
+        state = payload.get("state", "done")
+        with _BROWSER_BENCHMARK_JOBS_LOCK:
+            _BROWSER_BENCHMARK_JOBS[job_id] = {
+                "id": job_id, "state": state, "result": payload, "updated_at": int(time.time()),
+            }
+    except Exception as error:
+        with _BROWSER_BENCHMARK_JOBS_LOCK:
+            _BROWSER_BENCHMARK_JOBS[job_id] = {
+                "id": job_id, "state": "failed", "error": str(error), "updated_at": int(time.time()),
+            }
+
+
+def _start_browser_benchmark_job(args: list[str], timeout: int = 120) -> dict:
+    job_id = uuid.uuid4().hex
+    platform = args[args.index("--platform") + 1] if "--platform" in args else ""
+    action = args[0] if args else ""
+    with _BROWSER_BENCHMARK_JOBS_LOCK:
+        active = next((job for job in _BROWSER_BENCHMARK_JOBS.values()
+                       if job.get("platform") == platform and job.get("state") in {"pending", "running"}), None)
+        if active:
+            raise HTTPException(409, f'{platform} 浏览器正在执行{active.get("action", "任务")}，请完成后再试')
+        _BROWSER_BENCHMARK_JOBS[job_id] = {
+            "id": job_id, "state": "pending", "platform": platform, "action": action,
+            "updated_at": int(time.time()),
+        }
+    threading.Thread(target=_run_browser_benchmark_job, args=(job_id, args, timeout), daemon=True).start()
+    return _BROWSER_BENCHMARK_JOBS[job_id]
+
+
+def _validate_browser_platform(platform: str) -> None:
+    if platform not in _BROWSER_BENCHMARK_PLATFORMS:
+        raise HTTPException(400, f'暂不支持浏览器平台：{platform}')
+
+
+@app.get("/api/benchmarks/browser/status")
+async def api_benchmarks_browser_status(platform: str = ''):
+    platforms = [platform] if platform else list(_BROWSER_BENCHMARK_PLATFORMS)
+    for key in platforms:
+        _validate_browser_platform(key)
+    root = Path.home() / '.easel-browser-profiles'
+    return {"platforms": [{
+        "platform": key,
+        "profile_exists": (root / _BROWSER_BENCHMARK_PLATFORMS[key]).is_dir(),
+        "state": "profile_exists" if (root / _BROWSER_BENCHMARK_PLATFORMS[key]).is_dir() else "not_initialized",
+    } for key in platforms]}
+
+
+@app.post("/api/benchmarks/browser/login")
+async def api_benchmarks_browser_login(req: BrowserBenchmarkLoginRequest):
+    _validate_browser_platform(req.platform)
+    return _start_browser_benchmark_job(
+        ["login", "--platform", req.platform, "--wait", str(max(30, min(req.wait, 600)))],
+        max(60, min(req.wait, 600) + 30),
+    )
+
+
+@app.post("/api/benchmarks/browser/search")
+async def api_benchmarks_browser_search(req: BrowserBenchmarkSearchRequest):
+    _validate_browser_platform(req.platform)
+    if not req.keyword.strip():
+        raise HTTPException(400, 'keyword 不能为空')
+    return _start_browser_benchmark_job([
+        "search", "--platform", req.platform, "--keyword", req.keyword.strip(),
+        "--limit", str(max(1, min(req.limit, 50))),
+    ])
+
+
+@app.post("/api/benchmarks/browser/profile")
+async def api_benchmarks_browser_profile(req: BrowserBenchmarkProfileRequest):
+    _validate_browser_platform(req.platform)
+    parsed = urllib.parse.urlparse(req.url)
+    expected_host = _BROWSER_BENCHMARK_HOSTS[req.platform]
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or not (
+            parsed.hostname == expected_host or parsed.hostname.endswith('.' + expected_host)):
+        raise HTTPException(400, '主页链接与所选平台不匹配')
+    return _start_browser_benchmark_job([
+        "profile", "--platform", req.platform, "--url", req.url,
+        "--limit", str(max(1, min(req.limit, 100))),
+    ])
+
+
+@app.get("/api/benchmarks/browser/jobs/{job_id}")
+async def api_benchmarks_browser_job(job_id: str):
+    with _BROWSER_BENCHMARK_JOBS_LOCK:
+        job = _BROWSER_BENCHMARK_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, '浏览器任务不存在')
+    return job
 
 
 SCHEDULE_FILE = OUTPUTS_DIR / "_schedule.json"

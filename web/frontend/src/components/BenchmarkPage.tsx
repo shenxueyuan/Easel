@@ -2,9 +2,11 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   fetchBenchmarks, saveBenchmarks, fetchRsshubConfig, saveRsshubConfig,
   refreshBenchmarks, fetchBenchmarkPosts, fetchBenchmarkStatus, createIdea,
-  searchBenchmarks, fetchBenchmarkPool, addBenchmarkPoolAccount,
+  searchBenchmarks, fetchBenchmarkPool, addBenchmarkPoolAccount, resolveBenchmarkAccount,
+  benchmarkAvatarUrl, fetchBrowserBenchmarkStatus, startBrowserBenchmarkSearch, startBrowserBenchmarkLogin,
+  fetchBrowserBenchmarkJob,
 } from '../lib/api';
-import type { BenchmarkAccount, BenchmarkGroup, BenchmarkPost, BenchmarkSearchResult } from '../lib/api';
+import type { BenchmarkAccount, BenchmarkGroup, BenchmarkPost, BenchmarkSearchResult, BrowserPlatformStatus } from '../lib/api';
 import type { Page } from './Sidebar';
 import { renderMarkdown } from '../lib/sanitize';
 import {
@@ -35,12 +37,25 @@ const PLATFORM_TEMPLATES: { key: string; label: string; route: string; placehold
   { key: 'douyin', label: '抖音', route: '/douyin/user/{uid}', placeholder: '抖音用户 uid', example: 'MS4wLjABAAAA...' },
   { key: 'xiaohongshu', label: '小红书', route: '/xiaohongshu/user/{user_id}/notes', placeholder: '小红书 24 位 user_id', example: '593032945e87e77791e03696' },
   { key: 'toutiao', label: '头条', route: '/toutiao/user/token/{id}', placeholder: '头条用户 token', example: 'MS4wLjABAAAA...' },
+  { key: 'kuaishou', label: '快手', route: 'https://www.kuaishou.com/profile/{id}', placeholder: '快手个人主页链接', example: 'https://www.kuaishou.com/profile/...' },
   { key: '36kr', label: '36氪', route: '/36kr/newsflashes', placeholder: 'RSSHub 路由', example: '/36kr/newsflashes' },
   { key: 'custom', label: '自定义', route: '', placeholder: '完整 RSS URL', example: 'https://blog.example.com/rss.xml' },
 ];
 
+const BROWSER_SEARCH_PLATFORMS = [
+  { key: 'bilibili', label: 'B站' },
+  { key: 'xiaohongshu', label: '小红书' },
+  { key: 'douyin', label: '抖音' },
+  { key: 'weibo', label: '微博' },
+  { key: 'zhihu', label: '知乎' },
+  { key: 'toutiao', label: '头条' },
+  { key: 'wechat', label: '公众号' },
+  { key: 'kuaishou', label: '快手' },
+  { key: '36kr', label: '36氪' },
+];
+
 const PLATFORM_LABELS: Record<string, string> = Object.fromEntries(
-  PLATFORM_TEMPLATES.map((platform) => [platform.key, platform.label])
+  [...PLATFORM_TEMPLATES, ...BROWSER_SEARCH_PLATFORMS].map((platform) => [platform.key, platform.label])
 );
 
 function platformLabel(platform: string): string {
@@ -70,6 +85,22 @@ function accountKey(account: BenchmarkAccount): string {
   return account.id || `${account.platform}:${account.identifier || account.rss_url}`;
 }
 
+function mergeAccounts(...groups: BenchmarkAccount[][]): BenchmarkAccount[] {
+  const merged = new Map<string, BenchmarkAccount>();
+  groups.flat().forEach((account) => merged.set(accountKey(account), { ...merged.get(accountKey(account)), ...account }));
+  return [...merged.values()];
+}
+
+function accountSource(source?: string): string {
+  if (!source) return '账号池';
+  if (source.includes('browser_network')) return '平台数据';
+  if (source.includes('browser_dom')) return '网页识别';
+  if (source.includes('search')) return '在线搜索';
+  if (source.includes('resolve')) return '链接识别';
+  if (source === 'builtin') return '精选推荐';
+  return '账号池';
+}
+
 export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseTopic }: BenchmarkPageProps) {
   const [accounts, setAccounts] = useState<BenchmarkAccount[]>([]);
   const [keywords, setKeywords] = useState('');
@@ -87,13 +118,20 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
   const [selectedAccount, setSelectedAccount] = useState('');
   const [selectedPostKey, setSelectedPostKey] = useState('');
   const [poolAccounts, setPoolAccounts] = useState<BenchmarkAccount[]>([]);
+  const [addMode, setAddMode] = useState<'search' | 'link' | 'pool'>('search');
   const [poolQuery, setPoolQuery] = useState('');
   const [poolPlatform, setPoolPlatform] = useState('all');
   const [newLink, setNewLink] = useState('');
+  const [resolvingLink, setResolvingLink] = useState(false);
   const [searchKeyword, setSearchKeyword] = useState('');
+  const [searchPlatform, setSearchPlatform] = useState('bilibili');
+  const [browserStatuses, setBrowserStatuses] = useState<BrowserPlatformStatus[]>([]);
+  const [browserLoginLoading, setBrowserLoginLoading] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState('');
   const [searchResults, setSearchResults] = useState<BenchmarkSearchResult[]>([]);
+  const [topSearchOpen, setTopSearchOpen] = useState(false);
+  const [addingAccountKey, setAddingAccountKey] = useState('');
   const [searchPage, setSearchPage] = useState(1);
   const [searchPages, setSearchPages] = useState(1);
   const [minFollowers, setMinFollowers] = useState(0);
@@ -112,6 +150,7 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
         setKeywords(data.keywords || '');
       }).catch(() => {}) : Promise.resolve(),
       fetchBenchmarkPool().then((data) => setPoolAccounts(data.accounts || [])).catch(() => {}),
+      fetchBrowserBenchmarkStatus().then((data) => setBrowserStatuses(data.platforms || [])).catch(() => {}),
     ]).finally(() => setLoading(false));
   }, [persona]);
 
@@ -197,44 +236,124 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
 
   const addFromPool = (item: BenchmarkAccount) => appendAccount(item);
 
+  const waitBrowserJob = async (jobId: string) => {
+    for (let attempt = 0; attempt < 90; attempt += 1) {
+      const job = await fetchBrowserBenchmarkJob(jobId);
+      if (!['pending', 'running'].includes(job.state)) return job;
+      await new Promise((resolve) => window.setTimeout(resolve, 2000));
+    }
+    throw new Error('浏览器任务等待超时');
+  };
+
   const addSearchResult = async (item: BenchmarkSearchResult) => {
+    const key = accountKey(item);
+    if (addingAccountKey) return;
+    setAddingAccountKey(key);
     try {
       const data = await addBenchmarkPoolAccount(item);
-      appendAccount(data.account);
+      if (accounts.some((account) => accountKey(account) === accountKey(data.account))) {
+        showToast('该账号已在当前画像中');
+        return;
+      }
+      const nextAccounts = [...accounts, data.account];
+      await saveBenchmarks(persona, nextAccounts, keywords);
+      setAccounts(nextAccounts);
+      showToast(`已添加 ${data.account.name}`);
       setPoolAccounts((current) => current.some((account) => accountKey(account) === accountKey(data.account))
         ? current.map((account) => accountKey(account) === accountKey(data.account) ? data.account : account)
         : [...current, data.account]);
     } catch (error) {
       showToast(error instanceof Error ? error.message : '账号验证和保存失败');
+    } finally {
+      setAddingAccountKey('');
     }
   };
 
-  const handleNewLink = () => {
-    const url = newLink.trim();
-    if (!url) return;
-    const parsed = parseProfileUrl(url);
-    if (parsed) {
-      appendAccount({ ...parsed, source: 'link_resolve', verified: false, feed_status: 'unknown' });
+  const handleNewLink = async () => {
+    const input = newLink.trim();
+    if (!input) return;
+    setResolvingLink(true);
+    try {
+      const data = await resolveBenchmarkAccount(input);
+      appendAccount(data.account);
       setNewLink('');
-    } else {
-      showToast('无法识别该链接，请手动选择平台并填写');
+    } catch (error) {
+      const parsed = parseProfileUrl(input);
+      if (parsed) {
+        appendAccount({ ...parsed, source: 'link_resolve', verified: false, feed_status: 'unknown' });
+        setNewLink('');
+      } else {
+        showToast(error instanceof Error ? error.message : '无法识别该链接');
+      }
+    } finally {
+      setResolvingLink(false);
     }
   };
 
   const handleSearch = async (page = 1) => {
-    if (!searchKeyword.trim()) return;
+    if (!searchKeyword.trim() || browserLoginLoading || searchLoading) return;
     setSearchLoading(true);
     setSearchError('');
+    const query = searchKeyword.trim().toLowerCase();
+    const localResults = poolAccounts.filter((item) => item.platform === searchPlatform && [
+      item.name, item.description || '', item.category || '', ...(item.tags || []),
+    ].join(' ').toLowerCase().includes(query));
+    setSearchResults(localResults);
     try {
-      const data = await searchBenchmarks(searchKeyword.trim(), 'bilibili', page, minFollowers);
-      setSearchResults(data.results);
-      setSearchPage(data.page);
-      setSearchPages(data.pages);
-      if (!data.results.length) showToast('未找到相关账号');
+      if (searchPlatform === 'bilibili') {
+        const data = await searchBenchmarks(searchKeyword.trim(), 'bilibili', page, minFollowers);
+        const results = mergeAccounts(localResults, data.results);
+        setSearchResults(results);
+        setSearchPage(data.page);
+        setSearchPages(data.pages);
+        if (!results.length) showToast('未找到相关账号');
+      } else {
+        const started = await startBrowserBenchmarkSearch(searchPlatform, searchKeyword.trim());
+        const job = await waitBrowserJob(started.id);
+        if (job.state === 'failed') throw new Error(job.error || '浏览器搜索失败');
+        if (job.state === 'login_required') {
+          setSearchResults(localResults);
+          setSearchError(localResults.length ? '已显示账号池结果；连接平台登录后可搜索更多账号' : '该平台需要先登录浏览器');
+        } else if (job.state === 'blocked') {
+          setSearchResults(localResults);
+          setSearchError('平台检测到当前网络或浏览器环境存在风险，请稍后重试或更换可靠网络');
+        } else {
+          const results = mergeAccounts(localResults, job.result?.results || []);
+          setSearchResults(results);
+          setSearchPage(1);
+          setSearchPages(1);
+          if (!results.length) showToast('未找到相关账号');
+        }
+      }
     } catch (error) {
       setSearchError(error instanceof Error ? error.message : '搜索失败');
     } finally {
       setSearchLoading(false);
+    }
+  };
+
+  const openTopSearch = () => {
+    setTopSearchOpen(true);
+    void handleSearch(1);
+  };
+
+  const handleBrowserLogin = async () => {
+    if (browserLoginLoading || searchLoading) return;
+    setBrowserLoginLoading(true);
+    try {
+      showToast(`正在打开${platformLabel(searchPlatform)}登录窗口`);
+      const started = await startBrowserBenchmarkLogin(searchPlatform);
+      const job = await waitBrowserJob(started.id);
+      if (job.state === 'failed') throw new Error(job.error || '登录任务失败');
+      const status = await fetchBrowserBenchmarkStatus();
+      setBrowserStatuses(status.platforms || []);
+      showToast(job.state === 'ready' ? '浏览器登录已就绪'
+        : job.state === 'blocked' ? '平台检测到网络或浏览器环境风险，请稍后重试'
+        : '登录尚未完成，请重试');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '登录失败');
+    } finally {
+      setBrowserLoginLoading(false);
     }
   };
 
@@ -381,18 +500,7 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
                 <button className="btn btn-sm btn-primary" onClick={addAccount}><IconPlus size={14} /> 添加账号</button>
               </div>
             </div>
-            <p className="benchmarks-section-desc">选择平台后填写 RSSHub 路由、完整 RSS 地址，或直接粘贴平台主页链接自动识别。</p>
-            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-              <input
-                className="field"
-                style={{ flex: 1 }}
-                value={newLink}
-                onChange={(event) => setNewLink(event.target.value)}
-                onKeyDown={(event) => event.key === 'Enter' && handleNewLink()}
-                placeholder="粘贴 B 站/小红书/微博/知乎/抖音/头条主页链接，或公众号文章链接"
-              />
-              <button className="btn btn-primary" onClick={handleNewLink} disabled={!newLink.trim()}>识别添加</button>
-            </div>
+            <p className="benchmarks-section-desc">这里展示已选择的账号；可在下方通过在线搜索、链接识别或推荐账号池添加。</p>
 
             {loading ? (
               <div className="loading"><div className="spinner" />加载中…</div>
@@ -428,112 +536,151 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
             )}
           </section>
 
-          <section className="card benchmark-settings-card">
+          <section className="card benchmark-settings-card benchmark-discover-card">
             <div className="benchmarks-section-head">
-              <h3 className="benchmarks-section-title">B 站在线搜索</h3>
-              <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>关键词搜索 B 站 UP 主</span>
+              <div>
+                <h3 className="benchmarks-section-title">发现并添加对标账号</h3>
+                <p className="benchmarks-section-desc">参考 Folo 的订阅发现方式，通过关键词、主页链接或账号池快速添加。</p>
+              </div>
+              <span className="benchmark-discover-count">已选择 {accounts.length} 个</span>
             </div>
-            <p className="benchmarks-section-desc">输入关键词搜索 B 站账号，点击“添加”加入当前画像。</p>
-            <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
-              <input
-                className="field"
-                style={{ flex: 1 }}
-                value={searchKeyword}
-                onChange={(event) => setSearchKeyword(event.target.value)}
-                onKeyDown={(event) => event.key === 'Enter' && handleSearch()}
-                placeholder="搜索 B 站 UP 主，如：影视飓风"
-              />
-              <select className="field benchmark-platform" value={minFollowers}
-                onChange={(event) => setMinFollowers(Number(event.target.value))}>
-                <option value={0}>不限粉丝</option>
-                <option value={10000}>1 万以上</option>
-                <option value={100000}>10 万以上</option>
-                <option value={1000000}>100 万以上</option>
-              </select>
-              <button
-                className="btn btn-primary"
-                onClick={() => handleSearch(1)}
-                disabled={searchLoading || !searchKeyword.trim()}
-              >
-                {searchLoading ? '搜索中…' : '搜索 B 站'}
-              </button>
+            <div className="benchmark-discover-tabs">
+              {([['search', '在线搜索'], ['link', '粘贴链接'], ['pool', '推荐账号']] as const).map(([key, label]) => (
+                <button key={key} className={addMode === key ? 'active' : ''} onClick={() => setAddMode(key)}>{label}</button>
+              ))}
             </div>
-            {searchError && <p style={{ color: '#ef4444', fontSize: 13, marginTop: -6, marginBottom: 8 }}>{searchError}</p>}
-            {searchResults.length > 0 && (
-              <>
-                <div className="benchmarks-list" style={{ maxHeight: 320, overflowY: 'auto' }}>
-                  {searchResults.map((item) => {
-                    const exists = accounts.some((account) => accountKey(account) === accountKey(item));
-                    return (
-                      <div key={`search-${accountKey(item)}`} className="benchmark-row">
-                        <span className="benchmark-platform" style={{ fontSize: 13 }}>{platformLabel(item.platform)}</span>
-                        <span className="benchmark-name" style={{ fontSize: 13 }}>{item.name}</span>
-                        <span className="benchmark-url" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-                          粉丝 {item.followers?.toLocaleString('zh-CN') ?? '-'} · {item.description || ''}
-                        </span>
-                        <button className="btn btn-sm btn-primary" disabled={exists} onClick={() => addSearchResult(item)}>
-                          {exists ? '已添加' : '添加'}
-                        </button>
-                      </div>
-                    );
-                  })}
+
+            {addMode === 'search' && (
+              <div className="benchmark-discover-panel">
+                <div className="benchmark-discover-toolbar">
+                  <select className="field benchmark-platform" value={searchPlatform}
+                    onChange={(event) => { setSearchPlatform(event.target.value); setSearchResults([]); setSearchError(''); }}>
+                    {BROWSER_SEARCH_PLATFORMS.map((platform) => (
+                      <option key={platform.key} value={platform.key}>{platform.label}</option>
+                    ))}
+                  </select>
+                  <input className="field benchmark-discover-input" value={searchKeyword}
+                    onChange={(event) => setSearchKeyword(event.target.value)}
+                    onKeyDown={(event) => event.key === 'Enter' && handleSearch()}
+                    placeholder={`搜索${platformLabel(searchPlatform)}的账号、作者或机构`} />
+                  {searchPlatform === 'bilibili' && (
+                    <select className="field benchmark-platform" value={minFollowers}
+                      onChange={(event) => setMinFollowers(Number(event.target.value))}>
+                      <option value={0}>不限粉丝</option>
+                      <option value={10000}>1 万以上</option>
+                      <option value={100000}>10 万以上</option>
+                      <option value={1000000}>100 万以上</option>
+                    </select>
+                  )}
+                  {searchPlatform !== 'bilibili' && (
+                    <button className="btn" onClick={handleBrowserLogin} disabled={searchLoading || browserLoginLoading}>
+                      {browserLoginLoading ? '等待登录…' : browserStatuses.some((item) => item.platform === searchPlatform && item.profile_exists) ? '重新登录' : '连接平台'}
+                    </button>
+                  )}
+                  <button className="btn btn-primary" onClick={() => handleSearch(1)}
+                    disabled={searchLoading || browserLoginLoading || !searchKeyword.trim()}>
+                    {searchLoading ? '正在发现…' : '搜索'}
+                  </button>
                 </div>
-                {searchPages > 1 && (
-                  <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8, marginTop: 10 }}>
-                    <button className="btn btn-sm" disabled={searchLoading || searchPage <= 1}
-                      onClick={() => handleSearch(searchPage - 1)}>上一页</button>
-                    <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{searchPage} / {searchPages}</span>
-                    <button className="btn btn-sm" disabled={searchLoading || searchPage >= searchPages}
-                      onClick={() => handleSearch(searchPage + 1)}>下一页</button>
+                <div className="benchmark-discover-hint">优先匹配本地账号池，再从平台 API 或已登录浏览器补充结果。</div>
+                {searchError && <div className="benchmark-discover-error">{searchError}</div>}
+                {searchResults.length > 0 ? (
+                  <div className="benchmark-discover-results">
+                    {searchResults.map((item) => {
+                      const exists = accounts.some((account) => accountKey(account) === accountKey(item));
+                      return (
+                        <div key={`search-${accountKey(item)}`} className="benchmark-discover-item">
+                          <div className={`benchmark-discover-avatar platform-${item.platform}`}>
+                            {item.avatar ? <img src={benchmarkAvatarUrl(item.avatar)} alt="" /> : platformMark(item.platform)}
+                          </div>
+                          <div className="benchmark-discover-info">
+                            <div className="benchmark-discover-name">
+                              <strong>{item.name}</strong>
+                              <span>{platformLabel(item.platform)}</span>
+                              {item.verified && <span className="verified">已验证</span>}
+                            </div>
+                            <p>{item.description || item.category || '暂无账号简介'}</p>
+                            <div className="benchmark-discover-meta">
+                              <span>{item.followers == null ? '粉丝未知' : `${item.followers.toLocaleString('zh-CN')} 粉丝`}</span>
+                              <span>{accountSource(item.source)}</span>
+                              {item.profile_url && <a href={item.profile_url} target="_blank" rel="noreferrer">查看主页</a>}
+                            </div>
+                          </div>
+                          <button className="btn btn-sm btn-primary" disabled={exists || Boolean(addingAccountKey)} onClick={() => addSearchResult(item)}>
+                            {exists ? '已添加' : addingAccountKey === accountKey(item) ? '验证中…' : '添加'}
+                          </button>
+                        </div>
+                      );
+                    })}
+                    {searchPages > 1 && (
+                      <div className="benchmark-discover-pagination">
+                        <button className="btn btn-sm" disabled={searchLoading || searchPage <= 1}
+                          onClick={() => handleSearch(searchPage - 1)}>上一页</button>
+                        <span>{searchPage} / {searchPages}</span>
+                        <button className="btn btn-sm" disabled={searchLoading || searchPage >= searchPages}
+                          onClick={() => handleSearch(searchPage + 1)}>下一页</button>
+                      </div>
+                    )}
+                  </div>
+                ) : !searchLoading && searchKeyword && !searchError ? (
+                  <div className="benchmark-discover-empty">没有找到匹配账号，可尝试更换关键词或粘贴主页链接。</div>
+                ) : null}
+              </div>
+            )}
+
+            {addMode === 'link' && (
+              <div className="benchmark-discover-panel">
+                <div className="benchmark-link-box">
+                  <textarea className="field" value={newLink} onChange={(event) => setNewLink(event.target.value)}
+                    placeholder="粘贴账号主页、公众号文章链接，或包含链接的整段分享文案…" />
+                  <button className="btn btn-primary" onClick={handleNewLink} disabled={resolvingLink || !newLink.trim()}>
+                    {resolvingLink ? '正在识别…' : '识别并添加'}
+                  </button>
+                </div>
+                <div className="benchmark-discover-hint">支持小红书、抖音、B站、微博、知乎、头条、快手主页和公众号文章；短链接会自动跟随跳转。</div>
+              </div>
+            )}
+
+            {addMode === 'pool' && (
+              <div className="benchmark-discover-panel">
+                <div className="benchmark-discover-toolbar">
+                  <input className="field benchmark-discover-input" value={poolQuery}
+                    onChange={(event) => setPoolQuery(event.target.value)} placeholder="搜索账号、标签或领域" />
+                  <select className="field benchmark-platform" value={poolPlatform}
+                    onChange={(event) => setPoolPlatform(event.target.value)}>
+                    <option value="all">全部平台</option>
+                    {PLATFORM_TEMPLATES.map((platform) => (
+                      <option key={platform.key} value={platform.key}>{platform.label}</option>
+                    ))}
+                  </select>
+                </div>
+                {filteredPool.length === 0 ? (
+                  <div className="benchmark-discover-empty">没有匹配的推荐账号。</div>
+                ) : (
+                  <div className="benchmark-discover-results">
+                    {filteredPool.map((item) => {
+                      const exists = accounts.some((account) => accountKey(account) === accountKey(item));
+                      return (
+                        <div key={`pool-${accountKey(item)}`} className="benchmark-discover-item">
+                          <div className={`benchmark-discover-avatar platform-${item.platform}`}>
+                            {item.avatar ? <img src={benchmarkAvatarUrl(item.avatar)} alt="" /> : platformMark(item.platform)}
+                          </div>
+                          <div className="benchmark-discover-info">
+                            <div className="benchmark-discover-name"><strong>{item.name}</strong><span>{platformLabel(item.platform)}</span></div>
+                            <p>{item.description || item.category || '暂无账号简介'}</p>
+                            <div className="benchmark-discover-meta">
+                              <span>{item.tags?.length ? item.tags.join(' · ') : '未添加标签'}</span>
+                              <span>{accountSource(item.source)}</span>
+                            </div>
+                          </div>
+                          <button className="btn btn-sm btn-primary" disabled={exists} onClick={() => addFromPool(item)}>
+                            {exists ? '已添加' : '添加'}
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
-              </>
-            )}
-          </section>
-
-          <section className="card benchmark-settings-card">
-            <div className="benchmarks-section-head">
-              <h3 className="benchmarks-section-title">推荐账号池</h3>
-              <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>点击即可加入当前画像</span>
-            </div>
-            <p className="benchmarks-section-desc">按领域或平台筛选，一键添加热门对标账号。</p>
-            <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
-              <input
-                className="field"
-                style={{ flex: 1 }}
-                value={poolQuery}
-                onChange={(event) => setPoolQuery(event.target.value)}
-                placeholder="搜索账号、标签、领域…"
-              />
-              <select
-                className="field benchmark-platform"
-                value={poolPlatform}
-                onChange={(event) => setPoolPlatform(event.target.value)}
-              >
-                <option value="all">全部平台</option>
-                {PLATFORM_TEMPLATES.map((platform) => (
-                  <option key={platform.key} value={platform.key}>{platform.label}</option>
-                ))}
-              </select>
-            </div>
-            {filteredPool.length === 0 ? (
-              <p className="benchmarks-section-desc">没有匹配的推荐账号。</p>
-            ) : (
-              <div className="benchmarks-list" style={{ maxHeight: 320, overflowY: 'auto' }}>
-                {filteredPool.map((item, index) => (
-                  <div key={`${item.platform}-${item.name}-${index}`} className="benchmark-row">
-                    <span className="benchmark-platform" style={{ fontSize: 13 }}>{platformLabel(item.platform)}</span>
-                    <span className="benchmark-name" style={{ fontSize: 13 }}>{item.name}</span>
-                    <span className="benchmark-url" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-                      {item.category || '未分类'}{item.tags?.length ? ` · ${item.tags.join(' / ')}` : ''}
-                    </span>
-                    <button className="btn btn-sm btn-primary"
-                      disabled={accounts.some((account) => accountKey(account) === accountKey(item))}
-                      onClick={() => addFromPool(item)}>
-                      {accounts.some((account) => accountKey(account) === accountKey(item)) ? '已添加' : '添加'}
-                    </button>
-                  </div>
-                ))}
               </div>
             )}
           </section>
@@ -551,7 +698,63 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
   }
 
   return (
-    <div className="benchmark-reader">
+    <div className="benchmark-page-shell">
+      <div className="benchmark-top-search">
+        <select value={searchPlatform} onChange={(event) => setSearchPlatform(event.target.value)}>
+          {BROWSER_SEARCH_PLATFORMS.map((platform) => (
+            <option key={platform.key} value={platform.key}>{platform.label}</option>
+          ))}
+        </select>
+        <input value={searchKeyword} onChange={(event) => setSearchKeyword(event.target.value)}
+          onKeyDown={(event) => event.key === 'Enter' && openTopSearch()}
+          placeholder="搜索对标账号、作者或机构…" />
+        <button className="btn btn-primary" onClick={openTopSearch}
+          disabled={searchLoading || browserLoginLoading || !searchKeyword.trim()}>{searchLoading ? '搜索中…' : '搜索账号'}</button>
+        <button className="btn" onClick={() => { setAddMode('link'); setView('settings'); }}>粘贴链接</button>
+      </div>
+      {topSearchOpen && (
+        <div className="benchmark-top-results">
+          <div className="benchmark-top-results-head">
+            <strong>{searchLoading ? '正在搜索账号…' : `找到 ${searchResults.length} 个账号`}</strong>
+            <button onClick={() => setTopSearchOpen(false)} aria-label="关闭搜索结果">×</button>
+          </div>
+          {searchError && <div className="benchmark-discover-error">{searchError}</div>}
+          {!searchLoading && searchResults.length === 0 && !searchError && (
+            <div className="benchmark-discover-empty">没有找到匹配账号，请更换关键词或使用主页链接添加。</div>
+          )}
+          {searchResults.length > 0 && (
+            <div className="benchmark-top-results-list">
+              {searchResults.map((item) => {
+                const exists = accounts.some((account) => accountKey(account) === accountKey(item));
+                return (
+                  <div key={`top-${accountKey(item)}`} className="benchmark-discover-item">
+                    <div className={`benchmark-discover-avatar platform-${item.platform}`}>
+                      {item.avatar ? <img src={benchmarkAvatarUrl(item.avatar)} alt="" /> : platformMark(item.platform)}
+                    </div>
+                    <div className="benchmark-discover-info">
+                      <div className="benchmark-discover-name">
+                        <strong>{item.name}</strong><span>{platformLabel(item.platform)}</span>
+                        {item.verified && <span className="verified">已验证</span>}
+                      </div>
+                      <p>{item.description || '暂无账号简介'}</p>
+                      <div className="benchmark-discover-meta">
+                        <span>{item.followers == null ? '粉丝未知' : `${item.followers.toLocaleString('zh-CN')} 粉丝`}</span>
+                        <span>{accountSource(item.source)}</span>
+                        {item.profile_url && <a href={item.profile_url} target="_blank" rel="noreferrer">查看主页</a>}
+                      </div>
+                    </div>
+                    <button className="btn btn-sm btn-primary" disabled={exists || Boolean(addingAccountKey)}
+                      onClick={() => addSearchResult(item)}>
+                      {exists ? '已添加' : addingAccountKey === accountKey(item) ? '验证中…' : '添加'}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+      <div className="benchmark-reader">
       <aside className="benchmark-source-pane">
         <div className="benchmark-brand-row">
           <div className="benchmark-brand"><IconTarget size={18} /><span>对标账号</span></div>
@@ -681,6 +884,7 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
           </div>
         )}
       </main>
+      </div>
 
       {toast && <div className="toast ok"><span className="toast-icon">✓</span>{toast}</div>}
     </div>

@@ -211,6 +211,7 @@ NATIVE_SOURCES = {
     "douyin": (r"/douyin/user/([^/?]+)", "https://www.douyin.com/user/{id}", 'a[href*="/video/"]'),
     "xiaohongshu": (r"/xiaohongshu/user/([^/?]+)", "https://www.xiaohongshu.com/user/profile/{id}", 'a[href*="/explore/"]'),
     "toutiao": (r"/toutiao/user/(?:token/)?([^/?]+)", "https://www.toutiao.com/c/user/token/{id}/", 'a[href*="/article/"], a[href*="/video/"]'),
+    "kuaishou": (r"kuaishou\.com/profile/([^/?]+)", "https://www.kuaishou.com/profile/{id}", 'a[href*="/short-video/"]'),
 }
 
 

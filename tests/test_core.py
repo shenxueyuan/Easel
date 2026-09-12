@@ -18,6 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "web"))
 sys.path.insert(0, str(PROJECT_ROOT / "skills" / "openclaw" / "paper-explainer" / "scripts"))
+sys.path.insert(0, str(PROJECT_ROOT / "skills" / "shared" / "scripts"))
 
 from easel.commands import skill as cli_skill  # noqa: E402
 from easel import persona  # noqa: E402
@@ -25,6 +26,7 @@ import app as web  # noqa: E402
 import paper_ingest  # noqa: E402
 import render_slides  # noqa: E402
 import tts  # noqa: E402
+import browser_account_search  # noqa: E402
 from model_registry import (configured_providers, env_aliases, provider_ids,
                             provider_required_env)  # noqa: E402
 from persona_gate import classify as classify_persona_score  # noqa: E402
@@ -701,7 +703,7 @@ def test_benchmark_pool_initializes_and_persists(tmp_path, monkeypatch):
 
 
 def test_bilibili_search_provider_returns_normalized_accounts(monkeypatch):
-    monkeypatch.setattr(web, "_http_get_json", lambda *args, **kwargs: {
+    monkeypatch.setattr(web, "_bilibili_search_json", lambda *args, **kwargs: {
         "code": 0,
         "data": {"page": 1, "numPages": 2, "numResults": 21, "result": [{
             "type": "bili_user", "mid": 946974, "uname": "影视飓风",
@@ -712,3 +714,105 @@ def test_bilibili_search_provider_returns_normalized_accounts(monkeypatch):
     assert result["pages"] == 2
     assert result["results"][0]["id"] == "bilibili:946974"
     assert result["results"][0]["verified"] is True
+
+
+def test_bilibili_search_falls_back_to_browser(monkeypatch):
+    provider = web._BENCHMARK_SEARCH_PROVIDERS["bilibili"]
+    monkeypatch.setattr(provider, "search", lambda *args: (_ for _ in ()).throw(RuntimeError("412")))
+    monkeypatch.setattr(web, "_search_bilibili_browser_fallback", lambda *args: {
+        "results": [{"id": "bilibili:1", "platform": "bilibili", "identifier": "1",
+                     "name": "浏览器结果", "rss_url": "/bilibili/user/dynamic/1"}],
+        "page": 1, "pages": 1, "total": 1, "fallback": "browser",
+    })
+    result = asyncio.run(web.api_benchmarks_search("fallback-test", "bilibili", 1, 20, "relevance", 0))
+    assert result["fallback"] == "browser"
+    assert result["results"][0]["name"] == "浏览器结果"
+
+
+def test_browser_account_search_platforms_have_executable_paths():
+    expected = {"xiaohongshu", "douyin", "bilibili", "weibo", "zhihu",
+                "toutiao", "wechat", "kuaishou", "36kr"}
+    assert expected == set(browser_account_search.PLATFORMS)
+    for config in browser_account_search.PLATFORMS.values():
+        assert "{keyword}" in config["search"]
+        assert config["profile_re"] and config["post_re"]
+
+
+def test_browser_account_network_mapping_uses_stable_platform_id():
+    account = browser_account_search._account_from_object("douyin", {
+        "sec_uid": "stable-sec-uid", "nickname": "测试账号",
+        "follower_count": 12000, "signature": "简介",
+    })
+    assert account["id"] == "douyin:stable-sec-uid"
+    assert account["rss_url"] == "/douyin/user/stable-sec-uid"
+    assert account["followers"] == 12000
+
+
+def test_browser_account_network_mapping_rejects_empty_identifier():
+    assert browser_account_search._account_from_object(
+        "bilibili", {"mid": "", "uname": "无效账号"}) is None
+
+
+def test_browser_benchmark_profile_rejects_cross_platform_url():
+    from fastapi import HTTPException
+
+    request = web.BrowserBenchmarkProfileRequest(
+        platform="douyin", url="https://www.xiaohongshu.com/user/profile/test")
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(web.api_benchmarks_browser_profile(request))
+    assert exc.value.status_code == 400
+
+
+def test_benchmark_resolve_extracts_profile_from_share_text():
+    account = web._resolve_benchmark_input(
+        "复制打开主页 https://space.bilibili.com/946974?from=share 看更多内容")
+    assert account["id"] == "bilibili:946974"
+    assert account["rss_url"] == "/bilibili/user/dynamic/946974"
+    assert account["source"] == "link_resolve"
+
+
+def test_benchmark_resolve_rejects_untrusted_host():
+    with pytest.raises(ValueError):
+        web._resolve_benchmark_input("https://127.0.0.1/internal")
+
+
+def test_benchmark_resolve_extracts_wechat_biz_without_network():
+    account = web._resolve_benchmark_input(
+        "https://mp.weixin.qq.com/s?__biz=MzI3MjQ4NzU2NA%3D%3D&mid=1")
+    assert account["id"] == "wechat:MzI3MjQ4NzU2NA=="
+    assert account["rss_url"] == "/wechat/mp/MzI3MjQ4NzU2NA=="
+
+
+def test_benchmark_avatar_proxy_rejects_untrusted_hosts():
+    with pytest.raises(ValueError):
+        web._fetch_benchmark_avatar("https://127.0.0.1/private.png")
+
+
+def test_browser_goto_accepts_timeout_after_navigation_committed():
+    class Page:
+        url = "https://www.xiaohongshu.com/search_result?keyword=test"
+
+        def goto(self, *args, **kwargs):
+            raise TimeoutError("domcontentloaded timeout")
+
+    browser_account_search._goto(Page(), "https://www.xiaohongshu.com/search_result?keyword=test")
+
+
+def test_browser_page_state_reports_platform_risk():
+    state = browser_account_search._page_state(
+        "xiaohongshu", "IP存在风险", "https://www.xiaohongshu.com/website-login/error?error_code=300012", False)
+    assert state == "blocked"
+
+
+def test_browser_jobs_reject_same_platform_concurrency():
+    from fastapi import HTTPException
+
+    web._BROWSER_BENCHMARK_JOBS["active-test"] = {
+        "id": "active-test", "platform": "xiaohongshu", "action": "login", "state": "running",
+    }
+    try:
+        with pytest.raises(HTTPException) as exc:
+            web._start_browser_benchmark_job(["search", "--platform", "xiaohongshu", "--keyword", "test"])
+        assert exc.value.status_code == 409
+    finally:
+        web._BROWSER_BENCHMARK_JOBS.pop("active-test", None)

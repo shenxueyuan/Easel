@@ -255,6 +255,9 @@ export function fetchBenchmarkStatus(persona: string): Promise<{ state: string; 
 }
 export type BenchmarkSearchResult = BenchmarkAccount;
 export interface BenchmarkPoolResponse { accounts: BenchmarkAccount[]; page: number; limit: number; total: number; }
+export function benchmarkAvatarUrl(url: string): string {
+  return `${BASE}/api/benchmarks/avatar?url=${encodeURIComponent(url)}`;
+}
 export function fetchBenchmarkPool(keyword = '', platform = '', page = 1, limit = 100): Promise<BenchmarkPoolResponse> {
   const params = new URLSearchParams({ keyword, platform, page: String(page), limit: String(limit) });
   return request(`/api/benchmarks/pool?${params}`);
@@ -266,11 +269,45 @@ export function addBenchmarkPoolAccount(account: BenchmarkAccount): Promise<{ ac
     body: JSON.stringify({ account }),
   });
 }
+export function resolveBenchmarkAccount(input: string): Promise<{ account: BenchmarkAccount }> {
+  return request('/api/benchmarks/resolve', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ input }),
+  });
+}
 export function searchBenchmarks(keyword: string, platform = 'bilibili', page = 1, minFollowers = 0): Promise<{
   keyword: string; platform: string; results: BenchmarkSearchResult[]; page: number; pages: number; total: number; cached: boolean;
 }> {
   const params = new URLSearchParams({ keyword, platform, page: String(page), min_followers: String(minFollowers) });
   return request(`/api/benchmarks/search?${params}`);
+}
+export interface BrowserBenchmarkJob {
+  id: string;
+  state: string;
+  error?: string;
+  result?: { results?: BenchmarkAccount[]; account?: BenchmarkAccount; posts?: BenchmarkPost[]; page_url?: string; state?: string };
+}
+export interface BrowserPlatformStatus { platform: string; profile_exists: boolean; state: string; }
+export function fetchBrowserBenchmarkStatus(): Promise<{ platforms: BrowserPlatformStatus[] }> {
+  return request('/api/benchmarks/browser/status');
+}
+export function startBrowserBenchmarkSearch(platform: string, keyword: string, limit = 20): Promise<BrowserBenchmarkJob> {
+  return request('/api/benchmarks/browser/search', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ platform, keyword, limit }),
+  });
+}
+export function startBrowserBenchmarkLogin(platform: string): Promise<BrowserBenchmarkJob> {
+  return request('/api/benchmarks/browser/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ platform }),
+  });
+}
+export function startBrowserBenchmarkProfile(platform: string, url: string, limit = 30): Promise<BrowserBenchmarkJob> {
+  return request('/api/benchmarks/browser/profile', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ platform, url, limit }),
+  });
+}
+export function fetchBrowserBenchmarkJob(jobId: string): Promise<BrowserBenchmarkJob> {
+  return request(`/api/benchmarks/browser/jobs/${encodeURIComponent(jobId)}`);
 }
 
 // ---- 内容排期 ----

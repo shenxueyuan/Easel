@@ -55,6 +55,12 @@ const PATTERNS: PlatformPattern[] = [
     label: (id) => `头条 ${id.slice(0, 12)}`,
   },
   {
+    platform: 'kuaishou',
+    regex: /kuaishou\.com\/profile\/([^/?#]+)/,
+    route: (id) => `https://www.kuaishou.com/profile/${id}`,
+    label: (id) => `快手 ${id.slice(0, 12)}`,
+  },
+  {
     platform: 'wechat',
     regex: /[?&]__biz=([^&?#]+)/,
     route: (id) => `/wechat/mp/${id}`,
