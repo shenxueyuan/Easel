@@ -5570,7 +5570,7 @@ async def api_benchmarks_posts(persona: str):
 
 @app.post("/api/benchmarks/refresh")
 async def api_benchmarks_refresh(persona: str):
-    """手动触发对标账号抓取（异步）。"""
+    """手动触发对标账号抓取（异步，并发）。"""
     if not persona:
         raise HTTPException(400, 'persona 不能为空')
     config = _load_benchmarks_config(persona)
@@ -5582,28 +5582,55 @@ async def api_benchmarks_refresh(persona: str):
     def _fetch_all() -> None:
         try:
             import subprocess
+            from concurrent.futures import ThreadPoolExecutor, as_completed
             script = PROJECT_ROOT / "skills" / "shared" / "scripts" / "benchmark_fetch.py"
             rsshub_cfg = _load_rsshub_config()
             rsshub_url = rsshub_cfg.get("rsshub_url", "http://localhost:1200")
-            for acc in accounts:
+
+            def _fetch_one(acc):
                 platform = acc.get("platform", "")
                 name = acc.get("name", "")
                 rss_url = acc.get("rss_url", "") or acc.get("url", "")
-                if not platform or not name or not rss_url:
-                    continue
+                identifier = acc.get("identifier", "")
+                if not platform or not name:
+                    return
+                # 36kr、custom 等非社交平台用 RSS
+                prefer_browser = platform in ("bilibili", "xiaohongshu", "douyin", "weibo", "zhihu", "toutiao", "kuaishou")
                 try:
+                    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
                     subprocess.run(
                         [sys.executable, str(script), "fetch",
                          "--persona", persona,
                          "--platform", platform,
                          "--name", name,
-                         "--rss-url", rss_url,
-                         "--rsshub", rsshub_url],
-                        capture_output=True, timeout=90,
+                         "--rss-url", rss_url or "",
+                         "--rsshub", rsshub_url,
+                         "--prefer-browser" if prefer_browser else "--no-prefer-browser",
+                         "--identifier", identifier],
+                        capture_output=True, timeout=60,
                         cwd=str(PROJECT_ROOT),
+                        env=env,
                     )
                 except Exception:
-                    continue
+                    pass
+
+            # 按平台分组，同平台串行（避免 Profile 锁冲突），不同平台并发
+            platform_groups: dict[str, list] = {}
+            for acc in accounts:
+                p = acc.get("platform", "custom")
+                platform_groups.setdefault(p, []).append(acc)
+
+            with ThreadPoolExecutor(max_workers=min(len(platform_groups), 6)) as executor:
+                futures = []
+                for platform, accs in platform_groups.items():
+                    # 每个平台一个线程，内部串行
+                    def _fetch_platform(accs=accs):
+                        for acc in accs:
+                            _fetch_one(acc)
+                    futures.append(executor.submit(_fetch_platform))
+                for f in as_completed(futures):
+                    f.result()
+
             (BENCHMARKS_DIR / persona / "last_fetch.json").write_text(
                 json.dumps({"ts": int(time.time())}), encoding='utf-8')
             _write_benchmark_status(persona, 'done', f'抓取完成，共 {len(accounts)} 个账号')

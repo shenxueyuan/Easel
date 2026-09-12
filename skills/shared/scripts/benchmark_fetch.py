@@ -380,32 +380,102 @@ def _fetch_public_page(platform: str, account: str, rss_url: str) -> list[dict]:
     return posts[:30]
 
 
+def _fetch_via_browser(platform: str, account: str, rss_url: str, identifier: str = "") -> list[dict]:
+    """用浏览器访问账号主页抓取帖子，复用 browser_account_search 的 profile 函数。"""
+    if not identifier:
+        # 从 rss_url 中提取 identifier
+        for p, (pattern, _, _) in NATIVE_SOURCES.items():
+            if p == platform:
+                m = re.search(pattern, rss_url)
+                if m:
+                    identifier = m.group(1)
+                    break
+    if not identifier:
+        return []
+    # 构造主页 URL
+    homepage_map = {
+        "bilibili": f"https://space.bilibili.com/{identifier}",
+        "xiaohongshu": f"https://www.xiaohongshu.com/user/profile/{identifier}",
+        "douyin": f"https://www.douyin.com/user/{identifier}",
+        "weibo": f"https://weibo.com/u/{identifier}",
+        "zhihu": f"https://www.zhihu.com/people/{identifier}",
+        "toutiao": f"https://www.toutiao.com/c/user/token/{identifier}/",
+        "kuaishou": f"https://www.kuaishou.com/profile/{identifier}",
+    }
+    page_url = homepage_map.get(platform)
+    if not page_url:
+        return []
+    try:
+        sys.path.insert(0, str(Path(__file__).parent))
+        from browser_account_search import profile as browser_profile
+        result = browser_profile(platform, page_url, 30, False)
+        posts = result.get("posts", [])
+        out = []
+        for p in posts:
+            out.append({
+                "title": p.get("title", "")[:180],
+                "url": p.get("url", ""),
+                "summary": "",
+                "content": p.get("title", "")[:5000],
+                "published_at": str(int(time.time())),
+                "hot": "",
+                "snippet": p.get("title", "")[:120],
+                "source": f"浏览器: {platform}/{account}",
+                "confidence": "high",
+            })
+        return out[:30]
+    except Exception as error:
+        print(f"浏览器抓取失败: {error}", file=sys.stderr)
+        return []
+
+
 def fetch_account(persona: str, platform: str, name: str, rss_url: str,
-                   rsshub_base: str = DEFAULT_RSSHUB) -> list[dict]:
-    """通过 RSS feed 抓取单个对标账号的最新内容。"""
-    if not rss_url:
+                   rsshub_base: str = DEFAULT_RSSHUB, prefer_browser: bool = False,
+                   identifier: str = "") -> list[dict]:
+    """抓取单个对标账号的最新内容。
+    prefer_browser=True 时优先用浏览器访问账号主页抓取。"""
+    if not rss_url and not identifier:
         print(f"未配置 RSS 源: {platform}/{name}", file=sys.stderr)
         return []
 
-    url = _resolve_url(rss_url, rsshub_base)
-    print(f"抓取 RSS: {url}", file=sys.stderr)
-
+    posts: list[dict] = []
+    source_type = "failed"
     error = ""
-    try:
-        xml_text = _http_get(url, timeout=45)
-        posts = parse_rss(xml_text, platform, name)
-    except Exception as exc:
-        error = str(exc)
-        print(f"RSS 请求失败: {exc}", file=sys.stderr)
-        posts = []
+    url = ""
 
-    source_type = "rss"
+    # 优先用浏览器抓取
+    if prefer_browser and platform in NATIVE_SOURCES:
+        print(f"浏览器抓取: {platform}/{name}", file=sys.stderr)
+        posts = _fetch_via_browser(platform, name, rss_url, identifier)
+        if posts:
+            source_type = "browser"
+        else:
+            print(f"浏览器抓取失败，降级到 RSS: {platform}/{name}", file=sys.stderr)
+
+    # RSS 抓取
+    if not posts and rss_url:
+        url = _resolve_url(rss_url, rsshub_base)
+        print(f"抓取 RSS: {url}", file=sys.stderr)
+        try:
+            xml_text = _http_get(url, timeout=20)
+            posts = parse_rss(xml_text, platform, name)
+            if posts:
+                source_type = "rss"
+        except Exception as exc:
+            error = str(exc)
+            print(f"RSS 请求失败: {exc}", file=sys.stderr)
+
+    # Folo 缓存
     if not posts:
         posts = _fetch_folo_cache(platform, name, rss_url)
-        source_type = "folo_cache" if posts else "failed"
+        if posts:
+            source_type = "folo_cache"
+
+    # 公开页降级
     if not posts:
         posts = _fetch_public_page(platform, name, rss_url)
-        source_type = "public_page" if posts else "failed"
+        if posts:
+            source_type = "public_page"
 
     # 保存
     account_dir = BENCHMARKS_DIR / persona / f"{platform}_{name}"
@@ -421,7 +491,7 @@ def fetch_account(persona: str, platform: str, name: str, rss_url: str,
     (account_dir / "posts.json").write_text(
         json.dumps(posts, ensure_ascii=False, indent=2), encoding="utf-8")
     meta = {"platform": platform, "name": name, "rss_url": rss_url,
-            "resolved_url": url, "fetched_at": int(time.time()), "source_type": source_type}
+            "resolved_url": url if rss_url else "", "fetched_at": int(time.time()), "source_type": source_type}
     if error and not posts:
         meta["error"] = error
     (account_dir / "meta.json").write_text(
@@ -430,7 +500,8 @@ def fetch_account(persona: str, platform: str, name: str, rss_url: str,
 
 
 def cmd_fetch(args) -> int:
-    posts = fetch_account(args.persona, args.platform, args.name, args.rss_url, args.rsshub)
+    posts = fetch_account(args.persona, args.platform, args.name, args.rss_url, args.rsshub,
+                          prefer_browser=args.prefer_browser, identifier=args.identifier)
     print(json.dumps({"account": args.name, "platform": args.platform,
                        "posts_count": len(posts)}, ensure_ascii=False))
     return 0
@@ -459,12 +530,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="对标账号 RSS 抓取")
     sub = parser.add_subparsers(dest="cmd")
 
-    p_fetch = sub.add_parser("fetch", help="抓取单个对标账号（通过 RSS）")
+    p_fetch = sub.add_parser("fetch", help="抓取单个对标账号（通过 RSS 或浏览器）")
     p_fetch.add_argument("--persona", required=True)
     p_fetch.add_argument("--platform", required=True)
     p_fetch.add_argument("--name", required=True)
-    p_fetch.add_argument("--rss-url", required=True, help="RSS 源 URL 或 RSSHub 路由")
+    p_fetch.add_argument("--rss-url", default="", help="RSS 源 URL 或 RSSHub 路由")
     p_fetch.add_argument("--rsshub", default=DEFAULT_RSSHUB, help="RSSHub 实例地址")
+    p_fetch.add_argument("--prefer-browser", dest="prefer_browser", action="store_true", help="优先用浏览器抓取")
+    p_fetch.add_argument("--no-prefer-browser", dest="prefer_browser", action="store_false", help="不用浏览器抓取")
+    p_fetch.set_defaults(prefer_browser=False)
+    p_fetch.add_argument("--identifier", default="", help="账号平台 ID（用于构造主页 URL）")
     p_fetch.set_defaults(func=cmd_fetch)
 
     p_list = sub.add_parser("list", help="列出已抓取账号")
