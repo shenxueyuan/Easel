@@ -88,10 +88,13 @@ PLATFORMS = {
         "post_re": r"mp\.weixin\.qq\.com/s(?:/|\?)",
         "post_selector": "main a[href*='mp.weixin.qq.com/s']",
         "rss": "/wechat/mp/{id}",
-        "login_text": ["请输入验证码"],
+        "login_text": ["请输入验证码", "登录", "暂无与", "相关的官方认证订阅号"],
         # 公众号搜索从文章结果中提取公众号名称
         "account_selector": ".news-list > li",
         "account_name_selector": ".all-time-y2",
+        # 搜狗微信搜索需要微信扫码登录
+        "login_btn_text": "登录",
+        "login_frame_url_contains": "open.weixin.qq.com",
     },
     "kuaishou": {
         "name": "快手", "profile": "KuaishouProfile",
@@ -219,6 +222,17 @@ def _goto(page, url: str) -> None:
 def _wait_for_login(page, platform: str, cfg: dict, timeout: int = 600) -> str:
     """检测到需要登录/验证码时，保持浏览器打开等待用户处理，轮询状态。
     返回 'ready'（已登录/验证通过）、'blocked'（真正风控）或 'timeout'（超时）。"""
+    # 公众号需要点击登录按钮弹出微信扫码
+    if platform == "wechat" and cfg.get("login_btn_text"):
+        try:
+            page.evaluate(f"""() => {{
+                const btn = [...document.querySelectorAll('a, button')].find(b => 
+                    (b.innerText||'').trim() === {repr(cfg['login_btn_text'])});
+                if (btn) btn.click();
+            }}""")
+            page.wait_for_timeout(2000)
+        except Exception:
+            pass
     deadline = time.time() + max(30, min(timeout, 600))
     while time.time() < deadline:
         text = _text(page)
@@ -230,6 +244,16 @@ def _wait_for_login(page, platform: str, cfg: dict, timeout: int = 600) -> str:
         # done 表示用户已处理完成
         if state != "login_required":
             return "ready"
+        # 检查微信扫码 iframe 是否还在（登录成功后 iframe 会消失）
+        if platform == "wechat" and cfg.get("login_frame_url_contains"):
+            has_login_frame = any(cfg["login_frame_url_contains"] in f.url for f in page.frames)
+            if not has_login_frame:
+                # iframe 消失，可能登录成功
+                page.wait_for_timeout(2000)
+                text = _text(page)
+                state = _page_state(platform, text, page.url, False)
+                if state != "login_required":
+                    return "ready"
         page.wait_for_timeout(2000)
     return "timeout"
 
@@ -250,6 +274,9 @@ def _page_state(platform: str, text: str, url: str, has_results: bool) -> str:
         if marker in text:
             return "blocked"
     if _login_required(platform, text) and not has_results:
+        return "login_required"
+    # 公众号搜索未登录时显示"暂无与...相关的官方认证订阅号"
+    if platform == "wechat" and not has_results and "暂无" in text and "官方认证订阅号" in text:
         return "login_required"
     if not has_results:
         for marker in cfg.get("empty_text", []):
@@ -413,7 +440,7 @@ def search(platform: str, keyword: str, limit: int, headed: bool) -> dict:
         try:
             url = cfg["search"].format(keyword=urllib.parse.quote(keyword))
             # 需要登录的平台先访问首页建立 session，避免直接访问搜索页触发风控
-            if platform in ("xiaohongshu", "douyin", "kuaishou"):
+            if platform in ("xiaohongshu", "douyin", "kuaishou", "wechat"):
                 try:
                     _goto(page, cfg.get("home", ""))
                     page.wait_for_timeout(2000)
@@ -472,6 +499,9 @@ def search(platform: str, keyword: str, limit: int, headed: bool) -> dict:
                             page.wait_for_timeout(1500)
                         except Exception:
                             pass
+                    # 公众号登录成功后改用 type=1（公众号搜索）获取更准确的结果
+                    if platform == "wechat":
+                        url = f"https://weixin.sogou.com/weixin?type=1&query={urllib.parse.quote(keyword)}"
                     _goto(page, url)
                     page.wait_for_timeout(3500)
                     if platform == "xiaohongshu":
@@ -581,15 +611,29 @@ def login(platform: str, wait: int) -> dict:
         page = context.pages[0] if context.pages else context.new_page()
         try:
             # 先访问首页建立 session，再导航到搜索页
-            if platform in ("xiaohongshu", "douyin", "kuaishou"):
+            if platform in ("xiaohongshu", "douyin", "kuaishou", "wechat"):
                 try:
                     _goto(page, cfg.get("home", ""))
                     page.wait_for_timeout(2000)
                 except Exception:
                     pass
             login_url = cfg["search"].format(keyword=urllib.parse.quote("测试"))
+            # 公众号用 type=1 搜索检测登录态
+            if platform == "wechat":
+                login_url = "https://weixin.sogou.com/weixin?type=1&query=测试"
             _goto(page, login_url)
             page.wait_for_timeout(1500)
+            # 公众号需要点击登录按钮弹出微信扫码
+            if platform == "wechat" and cfg.get("login_btn_text"):
+                try:
+                    page.evaluate(f"""() => {{
+                        const btn = [...document.querySelectorAll('a, button')].find(b => 
+                            (b.innerText||'').trim() === {repr(cfg['login_btn_text'])});
+                        if (btn) btn.click();
+                    }}""")
+                    page.wait_for_timeout(2000)
+                except Exception:
+                    pass
             deadline = time.time() + max(30, min(wait, 600))
             while time.time() < deadline:
                 text = _text(page)
