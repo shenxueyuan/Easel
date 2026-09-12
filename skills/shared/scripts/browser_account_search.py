@@ -168,6 +168,126 @@ if (originalQuery) {
 """
 
 
+def _import_ego_cookies(context, platform: str) -> bool:
+    """从 Ego Lite 浏览器导入登录态 Cookie 到 Playwright context。
+    复用用户日常浏览器的登录态，无需重新扫码登录。"""
+    import sqlite3
+    import shutil
+    import tempfile
+    import hashlib
+    import subprocess
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    ego_profile = Path.home() / "Library" / "Application Support" / "Citro Labs" / "ego lite"
+    cookie_file = ego_profile / "Default" / "Cookies"
+    if not cookie_file.is_file():
+        return False
+
+    # 从 Keychain 获取 Ego Lite 的加密密钥
+    try:
+        key_passphrase = subprocess.check_output(
+            ["security", "find-generic-password", "-w", "-s", "ego safe storage"],
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return False
+
+    # PBKDF2 派生密钥
+    derived_key = hashlib.pbkdf2_hmac("sha1", key_passphrase, b"saltysalt", 1003, 16)
+    iv = b"\x20" * 16
+
+    # 平台域名映射
+    domain_map = {
+        "xiaohongshu": "xiaohongshu.com",
+        "douyin": "douyin.com",
+        "bilibili": "bilibili.com",
+        "weibo": "weibo.com",
+        "zhihu": "zhihu.com",
+        "toutiao": "toutiao.com",
+        "kuaishou": "kuaishou.com",
+        "wechat": "sogou.com",
+    }
+    target_domains = [domain_map.get(platform, "")]
+    # 微博需要同时导入 weibo.cn 的 Cookie
+    if platform == "weibo":
+        target_domains.append("weibo.cn")
+    target_domains = [d for d in target_domains if d]
+    if not target_domains:
+        return False
+
+    # 复制 Cookie 数据库（避免锁定问题）
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    try:
+        shutil.copy2(cookie_file, tmp.name)
+        conn = sqlite3.connect(tmp.name)
+        cur = conn.cursor()
+        # 查询所有匹配域名的 Cookie
+        placeholders = " OR ".join(["host_key LIKE ?" for _ in target_domains])
+        params = [f"%{d}%" for d in target_domains]
+        cur.execute(
+            f"SELECT host_key, name, encrypted_value, path, expires_utc, is_secure, is_httponly, samesite "
+            f"FROM cookies WHERE {placeholders}",
+            params,
+        )
+        rows = cur.fetchall()
+        conn.close()
+    except Exception:
+        os.unlink(tmp.name)
+        return False
+    os.unlink(tmp.name)
+
+    if not rows:
+        return False
+
+    # 解密并转换为 Playwright Cookie 格式
+    cookies = []
+    for host, name, enc_val, path, expires, secure, httponly, samesite in rows:
+        try:
+            if enc_val[:3] != b"v10":
+                continue
+            encrypted = enc_val[3:]
+            cipher = Cipher(algorithms.AES(derived_key), modes.CBC(iv))
+            decryptor = cipher.decryptor()
+            decrypted = decryptor.update(encrypted) + decryptor.finalize()
+            # 去 PKCS7 padding
+            pad_len = decrypted[-1]
+            if 1 <= pad_len <= 16:
+                decrypted = decrypted[:-pad_len]
+            # 跳过前 32 字节 SHA-256 前缀
+            value = decrypted[32:].decode("utf-8", "replace")
+            if not value:
+                continue
+            cookie = {
+                "name": name,
+                "value": value,
+                "domain": host,
+                "path": path or "/",
+                "secure": bool(secure),
+                "httpOnly": bool(httponly),
+            }
+            # expires_utc 是 Chrome 时间戳（微秒，从 1601-01-01 起）
+            if expires and expires > 0:
+                cookie["expires"] = expires / 1_000_000 - 11644473600
+            # samesite: 0=None, 1=Lax, 2=Strict
+            if samesite == 1:
+                cookie["sameSite"] = "Lax"
+            elif samesite == 2:
+                cookie["sameSite"] = "Strict"
+            cookies.append(cookie)
+        except Exception:
+            continue
+
+    if not cookies:
+        return False
+
+    try:
+        context.add_cookies(cookies)
+        return True
+    except Exception:
+        return False
+
+
 def _launch(playwright, platform: str, headed: bool):
     profile = _profile_dir(platform)
     profile.mkdir(parents=True, exist_ok=True)
@@ -189,6 +309,8 @@ def _launch(playwright, platform: str, headed: bool):
         context.add_init_script(_STEALTH_JS)
     except Exception:
         pass
+    # 从 Ego Lite 浏览器导入登录态 Cookie
+    _import_ego_cookies(context, platform)
     return context
 
 
