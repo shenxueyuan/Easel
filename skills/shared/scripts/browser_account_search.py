@@ -73,22 +73,25 @@ PLATFORMS = {
         "name": "头条", "profile": "ToutiaoProfile",
         "search": "https://so.toutiao.com/search/?dvpf=pc&keyword={keyword}&pd=user",
         "home": "https://www.toutiao.com",
-        "profile_re": r"toutiao\.com/c/user/token/([^/?#]+)",
+        "profile_re": r"toutiao\.com/c/user/([^/?#]+)",
         "post_re": r"toutiao\.com/(?:article|video)/([0-9]+)",
         "post_selector": "main a[href], [class*='profile'] a[href]",
-        "rss": "/toutiao/user/token/{id}",
+        "rss": "/toutiao/user/{id}",
         "login_text": [],
         "empty_text": ["未找到相关结果", "请尝试缩短关键词"],
     },
     "wechat": {
         "name": "公众号", "profile": "WechatProfile",
-        "search": "https://weixin.sogou.com/weixin?type=1&query={keyword}",
+        "search": "https://weixin.sogou.com/weixin?type=2&query={keyword}",
         "home": "https://weixin.sogou.com",
-        "profile_re": r"[?&]__biz=([^&#]+)",
+        "profile_re": r"mp\.weixin\.qq\.com",
         "post_re": r"mp\.weixin\.qq\.com/s(?:/|\?)",
         "post_selector": "main a[href*='mp.weixin.qq.com/s']",
         "rss": "/wechat/mp/{id}",
         "login_text": ["请输入验证码"],
+        # 公众号搜索从文章结果中提取公众号名称
+        "account_selector": ".news-list > li",
+        "account_name_selector": ".all-time-y2",
     },
     "kuaishou": {
         "name": "快手", "profile": "KuaishouProfile",
@@ -98,7 +101,7 @@ PLATFORMS = {
         "post_re": r"kuaishou\.com/short-video/([^/?#]+)",
         "post_selector": "[class*='profile'] a[href*='/short-video/']",
         "rss": "https://www.kuaishou.com/profile/{id}",
-        "login_text": ["登录即可享受"],
+        "login_text": ["登录即可享受", "立即登录", "登录后查看"],
         "blocked_text": ['"result":2', '"result":1'],
     },
     "36kr": {
@@ -312,6 +315,33 @@ def _collect_accounts(platform: str, value, out: dict[str, dict]) -> None:
 
 def _dom_accounts(platform: str, page) -> list[dict]:
     cfg = PLATFORMS[platform]
+    # 公众号搜索从文章结果中提取公众号名称（没有用户主页链接）
+    if platform == "wechat" and cfg.get("account_selector"):
+        items = page.eval_on_selector_all(cfg["account_selector"], """els => els.map(e => {
+            const nameEl = e.querySelector(%SELECTOR%);
+            const link = e.querySelector('a[href]');
+            return { name: nameEl ? nameEl.innerText.trim() : '', text: (e.innerText||'').replace(/\\s+/g,' ').trim().slice(0,200), href: link ? link.href : '' };
+        })""".replace("%SELECTOR%", repr(cfg["account_name_selector"])))
+        out: dict[str, dict] = {}
+        for item in items:
+            name = item.get("name", "").strip()
+            if not name or len(name) > 40:
+                continue
+            # 用公众号名称作为 ID（公众号没有公开的数字 ID）
+            identifier = name
+            account_id = f"wechat:{name}"
+            if account_id in out:
+                continue
+            out[account_id] = {
+                "id": account_id, "platform": "wechat", "identifier": identifier,
+                "name": name, "profile_url": "",
+                "rss_url": f"/wechat/mp/{name}",
+                "avatar": "", "description": item.get("text", "")[:200],
+                "followers": None, "source": "wechat_browser_dom",
+                "verified": True, "feed_status": "unknown", "last_verified_at": int(time.time()),
+            }
+        return list(out.values())
+
     links = page.eval_on_selector_all("a[href]", """els => els.map(a => ({
       href: a.href, text: (a.innerText || a.textContent || '').replace(/\\s+/g, ' ').trim(),
       card: (a.closest('article, li, section, [class*=card], [class*=item], [class*=user]')?.innerText || '').replace(/\\s+/g, ' ').trim(),
@@ -320,7 +350,18 @@ def _dom_accounts(platform: str, page) -> list[dict]:
     out: dict[str, dict] = {}
     regex = re.compile(cfg["profile_re"])
     for link in links:
-        match = regex.search(link.get("href", ""))
+        href = link.get("href", "")
+        # 头条搜索结果是跳转链接，需要解析 url 参数获取实际用户链接
+        if platform == "toutiao" and "sou.toutiao.com/search/jump" in href:
+            try:
+                parsed = urllib.parse.urlparse(href)
+                params = urllib.parse.parse_qs(parsed.query)
+                real_url = params.get("url", [""])[0]
+                if real_url:
+                    href = urllib.parse.unquote(real_url)
+            except Exception:
+                pass
+        match = regex.search(href)
         if not match:
             continue
         identifier = urllib.parse.unquote(match.group(1))
@@ -344,7 +385,7 @@ def _dom_accounts(platform: str, page) -> list[dict]:
             followers_match = re.search(r"(?:粉丝|关注者|粉丝数|关注)[：:]\s*([0-9.,]+\s*[万亿wWkK]?)", card)
         out.setdefault(f"{platform}:{identifier}", {
             "id": f"{platform}:{identifier}", "platform": platform, "identifier": identifier,
-            "name": name[:80], "profile_url": link["href"],
+            "name": name[:80], "profile_url": href,
             "rss_url": cfg["rss"].format(id=identifier) if cfg["rss"] else "",
             "avatar": link.get("avatar", ""), "description": card[:300],
             "followers": parse_num(followers_match.group(1)) if followers_match else None,
@@ -465,6 +506,17 @@ def search(platform: str, keyword: str, limit: int, headed: bool) -> dict:
                     return {"platform": platform, "keyword": keyword,
                             "state": "login_required", "results": [], "page_url": page.url, "captured": 0,
                             "warning": f'{cfg["name"]}登录超时，请重新尝试'}
+            # 滚动加载更多结果（最多 3 次滚动，每次等待 2 秒）
+            if state == "done" and len(results) < limit:
+                for _ in range(3):
+                    prev_count = len(results)
+                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    page.wait_for_timeout(2000)
+                    new_dom = _dom_accounts(platform, page)
+                    known = {item["id"] for item in results}
+                    results.extend(item for item in new_dom if item["id"] not in known)
+                    if len(results) == prev_count:
+                        break
             return {"platform": platform, "keyword": keyword,
                     "state": state,
                     "results": results[:max(1, min(limit, 50))], "page_url": page.url, "captured": len(captured)}

@@ -51,7 +51,6 @@ const BROWSER_SEARCH_PLATFORMS = [
   { key: 'toutiao', label: '头条' },
   { key: 'wechat', label: '公众号' },
   { key: 'kuaishou', label: '快手' },
-  { key: '36kr', label: '36氪' },
 ];
 
 const PLATFORM_LABELS: Record<string, string> = Object.fromEntries(
