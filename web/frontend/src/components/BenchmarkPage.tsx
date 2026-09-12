@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
-  fetchBenchmarks, saveBenchmarks, fetchRsshubConfig, saveRsshubConfig,
+  fetchBenchmarks, saveBenchmarks, addBenchmarkAccount, fetchRsshubConfig, saveRsshubConfig,
   refreshBenchmarks, fetchBenchmarkPosts, fetchBenchmarkStatus, createIdea,
   searchBenchmarks, fetchBenchmarkPool, addBenchmarkPoolAccount, resolveBenchmarkAccount,
   benchmarkAvatarUrl, fetchBrowserBenchmarkStatus, startBrowserBenchmarkSearch, startBrowserBenchmarkLogin,
@@ -237,7 +237,8 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
   const addFromPool = (item: BenchmarkAccount) => appendAccount(item);
 
   const waitBrowserJob = async (jobId: string) => {
-    for (let attempt = 0; attempt < 90; attempt += 1) {
+    // 搜索可能需要等待用户登录，最多等待 11 分钟（330 次 × 2 秒）
+    for (let attempt = 0; attempt < 330; attempt += 1) {
       const job = await fetchBrowserBenchmarkJob(jobId);
       if (!['pending', 'running'].includes(job.state)) return job;
       await new Promise((resolve) => window.setTimeout(resolve, 2000));
@@ -250,15 +251,14 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
     if (addingAccountKey) return;
     setAddingAccountKey(key);
     try {
-      const data = await addBenchmarkPoolAccount(item);
-      if (accounts.some((account) => accountKey(account) === accountKey(data.account))) {
+      const poolData = await addBenchmarkPoolAccount(item);
+      const data = await addBenchmarkAccount(persona, poolData.account);
+      setAccounts(data.accounts || []);
+      if (!data.added) {
         showToast('该账号已在当前画像中');
-        return;
+      } else {
+        showToast(`已添加 ${data.account.name}`);
       }
-      const nextAccounts = [...accounts, data.account];
-      await saveBenchmarks(persona, nextAccounts, keywords);
-      setAccounts(nextAccounts);
-      showToast(`已添加 ${data.account.name}`);
       setPoolAccounts((current) => current.some((account) => accountKey(account) === accountKey(data.account))
         ? current.map((account) => accountKey(account) === accountKey(data.account) ? data.account : account)
         : [...current, data.account]);
@@ -579,7 +579,7 @@ export default function BenchmarkPage({ persona, onNavigate, onBreakdown, onUseT
                   )}
                   <button className="btn btn-primary" onClick={() => handleSearch(1)}
                     disabled={searchLoading || browserLoginLoading || !searchKeyword.trim()}>
-                    {searchLoading ? '正在发现…' : '搜索'}
+                    {searchLoading ? '正在搜索…如需登录请在弹出的浏览器中操作' : '搜索'}
                   </button>
                 </div>
                 <div className="benchmark-discover-hint">优先匹配本地账号池，再从平台 API 或已登录浏览器补充结果。</div>

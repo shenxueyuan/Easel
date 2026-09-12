@@ -37,7 +37,7 @@ PLATFORMS = {
         "post_re": r"douyin\.com/(?:video|note)/([0-9]+)",
         "post_selector": "[data-e2e='user-post-list'] a[href*='/video/'], [class*='user-post'] a[href*='/video/'], [class*='user-post'] a[href*='/note/']",
         "rss": "/douyin/user/{id}",
-        "login_text": ["登录后即可搜索", "扫码登录"],
+        "login_text": ["登录后即可搜索", "扫码登录", "登录后即可查看", "登录查看"],
     },
     "bilibili": {
         "name": "B站", "profile": "BilibiliProfile",
@@ -166,9 +166,9 @@ def _launch(playwright, platform: str, headed: bool):
     profile = _profile_dir(platform)
     profile.mkdir(parents=True, exist_ok=True)
     real_ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.6943.16 Safari/537.36"
-    # 小红书和抖音对 headless 模式有严格检测，必须用 headed 模式
-    # 其他平台可以用 --headless=new 新无头模式
-    needs_real_headed = platform in ("xiaohongshu", "douyin")
+    # 小红书、抖音、快手对 headless 模式有严格检测，必须用 headed 模式
+    # 其他平台需要登录时也用 headed 模式，让用户能看到浏览器窗口登录
+    needs_real_headed = platform in ("xiaohongshu", "douyin", "kuaishou")
     args = list(LAUNCH_ARGS)
     if not headed and not needs_real_headed:
         args.append("--headless=new")
@@ -211,6 +211,21 @@ def _goto(page, url: str) -> None:
         current = urllib.parse.urlparse(page.url).hostname or ''
         if not current or not (current == expected or current.endswith('.' + expected) or expected.endswith('.' + current)):
             raise
+
+
+def _wait_for_login(page, platform: str, cfg: dict, timeout: int = 600) -> str:
+    """检测到登录态时，保持浏览器打开等待用户登录，轮询登录状态。
+    返回 'ready'（登录成功）、'blocked'（风控）或 'timeout'（超时）。"""
+    deadline = time.time() + max(30, min(timeout, 600))
+    while time.time() < deadline:
+        text = _text(page)
+        state = _page_state(platform, text, page.url, False)
+        if state == "blocked":
+            return "blocked"
+        if state != "login_required":
+            return "ready"
+        page.wait_for_timeout(2000)
+    return "timeout"
 
 
 def _login_required(platform: str, text: str) -> bool:
@@ -396,8 +411,55 @@ def search(platform: str, keyword: str, limit: int, headed: bool) -> dict:
             results.extend(item for item in dom if item["id"] not in known)
             # 过滤当前登录用户（小红书用户搜索结果中会包含"我"）
             results = [r for r in results if r["name"] != "我"]
+            state = _page_state(platform, text, page.url, bool(results))
+            # 检测到需要登录时，保持浏览器打开等待用户登录，登录后自动重新搜索
+            if state == "login_required":
+                login_result = _wait_for_login(page, platform, cfg, timeout=600)
+                if login_result == "ready":
+                    # 登录成功，重新导航到搜索页
+                    captured.clear()
+                    if platform == "xiaohongshu":
+                        try:
+                            _goto(page, cfg.get("home", "https://www.xiaohongshu.com/explore"))
+                            page.wait_for_timeout(1500)
+                        except Exception:
+                            pass
+                    _goto(page, url)
+                    page.wait_for_timeout(3500)
+                    if platform == "xiaohongshu":
+                        try:
+                            page.evaluate("""() => {
+                                document.querySelectorAll('.reds-modal, [class*="login-modal"], [class*="modal"], [class*="mask"], [class*="overlay"]').forEach(m => m.remove());
+                            }""")
+                            page.wait_for_timeout(1500)
+                            clicked = page.evaluate("""() => {
+                                const tabs = [...document.querySelectorAll('div.channel')];
+                                const userTab = tabs.find(t => t.innerText.trim() === '用户');
+                                if (userTab) { userTab.click(); return true; }
+                                return false;
+                            }""")
+                            if clicked:
+                                page.wait_for_timeout(4000)
+                                captured.clear()
+                        except Exception:
+                            pass
+                    text = _text(page)
+                    results = list(captured.values())
+                    dom = _dom_accounts(platform, page)
+                    known = {item["id"] for item in results}
+                    results.extend(item for item in dom if item["id"] not in known)
+                    results = [r for r in results if r["name"] != "我"]
+                    state = _page_state(platform, text, page.url, bool(results))
+                elif login_result == "blocked":
+                    return {"platform": platform, "keyword": keyword,
+                            "state": "blocked", "results": [], "page_url": page.url, "captured": 0,
+                            "warning": f'{cfg["name"]}平台检测到网络风险，请更换网络后重试'}
+                else:
+                    return {"platform": platform, "keyword": keyword,
+                            "state": "login_required", "results": [], "page_url": page.url, "captured": 0,
+                            "warning": f'{cfg["name"]}登录超时，请重新尝试'}
             return {"platform": platform, "keyword": keyword,
-                    "state": _page_state(platform, text, page.url, bool(results)),
+                    "state": state,
                     "results": results[:max(1, min(limit, 50))], "page_url": page.url, "captured": len(captured)}
         finally:
             context.close()

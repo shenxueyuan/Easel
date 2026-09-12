@@ -244,6 +244,13 @@ export function saveBenchmarks(persona: string, accounts: BenchmarkAccount[], ke
     body: JSON.stringify({ persona, accounts, keywords }),
   });
 }
+export function addBenchmarkAccount(persona: string, account: BenchmarkAccount): Promise<{ account: BenchmarkAccount; accounts: BenchmarkAccount[]; added: boolean }> {
+  return request('/api/benchmarks/add', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ persona, account }),
+  });
+}
 export function fetchBenchmarkPosts(persona: string): Promise<{ groups: BenchmarkGroup[]; last_fetch: number }> {
   return request(`/api/benchmarks/posts?persona=${encodeURIComponent(persona)}`);
 }

@@ -5483,6 +5483,41 @@ async def api_benchmarks_save(req: BenchmarkConfigRequest):
     return {"saved": True}
 
 
+class BenchmarkAddRequest(BaseModel):
+    persona: str
+    account: dict
+
+
+@app.post("/api/benchmarks/add")
+async def api_benchmarks_add(req: BenchmarkAddRequest):
+    """增量添加单个对标账号，不影响已有账号。"""
+    if not req.persona:
+        raise HTTPException(400, 'persona 不能为空')
+    try:
+        loop = asyncio.get_event_loop()
+        verified = await loop.run_in_executor(None, _verify_benchmark_account, req.account)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    config = _load_benchmarks_config(req.persona)
+    accounts = config.get("accounts", [])
+    normalized = _normalize_benchmark_account(verified)
+    if not normalized["platform"] or not normalized["name"] or not normalized["rss_url"]:
+        raise HTTPException(400, '账号信息不完整')
+    key = normalized["id"] or f'{normalized["platform"]}:{normalized["rss_url"]}'
+    for i, existing in enumerate(accounts):
+        existing_norm = _normalize_benchmark_account(existing)
+        existing_key = existing_norm["id"] or f'{existing_norm["platform"]}:{existing_norm["rss_url"]}'
+        if existing_key == key:
+            accounts[i] = normalized
+            _save_benchmarks_config(req.persona, {"accounts": accounts, "keywords": config.get("keywords", "")})
+            _upsert_benchmark_pool(normalized)
+            return {"account": normalized, "accounts": accounts, "added": False}
+    accounts.append(normalized)
+    _save_benchmarks_config(req.persona, {"accounts": accounts, "keywords": config.get("keywords", "")})
+    _upsert_benchmark_pool(normalized)
+    return {"account": normalized, "accounts": accounts, "added": True}
+
+
 @app.get("/api/benchmarks/posts")
 async def api_benchmarks_posts(persona: str):
     """获取已抓取的对标账号帖子。"""
@@ -6025,10 +6060,11 @@ async def api_benchmarks_browser_search(req: BrowserBenchmarkSearchRequest):
     _validate_browser_platform(req.platform)
     if not req.keyword.strip():
         raise HTTPException(400, 'keyword 不能为空')
+    # 搜索可能需要等待用户登录，超时设为 660 秒（11 分钟）
     return _start_browser_benchmark_job([
         "search", "--platform", req.platform, "--keyword", req.keyword.strip(),
         "--limit", str(max(1, min(req.limit, 50))),
-    ])
+    ], timeout=660)
 
 
 @app.post("/api/benchmarks/browser/profile")
