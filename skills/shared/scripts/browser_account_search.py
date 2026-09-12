@@ -528,6 +528,13 @@ def login(platform: str, wait: int) -> dict:
         context = _launch(playwright, platform, True)
         page = context.pages[0] if context.pages else context.new_page()
         try:
+            # 先访问首页建立 session，再导航到搜索页
+            if platform in ("xiaohongshu", "douyin", "kuaishou"):
+                try:
+                    _goto(page, cfg.get("home", ""))
+                    page.wait_for_timeout(2000)
+                except Exception:
+                    pass
             login_url = cfg["search"].format(keyword=urllib.parse.quote("测试"))
             _goto(page, login_url)
             page.wait_for_timeout(1500)
@@ -538,6 +545,22 @@ def login(platform: str, wait: int) -> dict:
                 if state == "blocked":
                     return {"platform": platform, "state": "blocked", "page_url": page.url}
                 if state != "login_required":
+                    # 登录成功，等待 Cookie 写入磁盘
+                    # 抖音等平台的登录态 Cookie 是 session 级别的，
+                    # 需要等待浏览器将其持久化到 Profile
+                    page.wait_for_timeout(3000)
+                    # 访问首页确认登录态已生效
+                    try:
+                        _goto(page, cfg.get("home", ""))
+                        page.wait_for_timeout(2000)
+                        # 再次确认登录状态
+                        text2 = _text(page)
+                        state2 = _page_state(platform, text2, page.url, False)
+                        if state2 == "login_required":
+                            # 首页仍显示未登录，继续等待
+                            page.wait_for_timeout(3000)
+                    except Exception:
+                        pass
                     return {"platform": platform, "state": "ready", "page_url": page.url}
                 page.wait_for_timeout(1000)
             return {"platform": platform, "state": "login_required", "page_url": page.url}
